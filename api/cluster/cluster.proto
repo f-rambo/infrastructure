@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package cluster;
+
+import "internal/biz/cluster.proto";
+
+option go_package = "api/cluster;";
+
+
+service ClusterInterface {
+      rpc Start(biz.cluster.Cluster) returns (biz.cluster.Cluster);
+
+      rpc Stop(biz.cluster.Cluster) returns (biz.cluster.Cluster);
+      
+      rpc GetRegions(biz.cluster.Cluster) returns (biz.cluster.Cluster);
+
+      rpc MigrateToBostionHost(biz.cluster.Cluster) returns (biz.cluster.Cluster);
+      
+      rpc GetNodesSystemInfo(biz.cluster.Cluster) returns (biz.cluster.Cluster);
+      
+      rpc Install(biz.cluster.Cluster) returns (biz.cluster.Cluster);
+      
+      rpc UnInstall(biz.cluster.Cluster) returns (biz.cluster.Cluster);
+      
+      rpc HandlerNodes(biz.cluster.Cluster) returns (biz.cluster.Cluster);
+}

@@ -1,0 +1,17 @@
+server:
+  debug: false
+  name: "infrastructure"
+  version: 0.0.1
+  env: cluster
+  http:
+    network: "tcp"
+    addr: 0.0.0.0:8001
+    timeout: 1
+  grpc:
+    network: "tcp"
+    addr: 0.0.0.0:9001
+    timeout: 1
+log:
+  max_size: 500
+  max_backups: 3
+  max_age: 28
