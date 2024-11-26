@@ -25,12 +25,10 @@ const (
 	AwsTagKeyName    = "Name"
 	AwsTagKeyType    = "Type"
 	AwsTagKeyZone    = "Zone"
-	AwsTagKeyBind    = "Bind"
 	AwsTagKeyVpc     = "Vpc"
 
 	AwsResourcePublic        = "Public"
 	AwsResourcePrivate       = "Private"
-	AwsResourceBind          = "true"
 	AwsReosurceUnBind        = "false"
 	AwsReousrceBostionHostSG = "bostionHost"
 	AwsResourceHttpSG        = "http"
@@ -346,7 +344,7 @@ func (a *AwsCloudUsecase) SetByNodeGroups(ctx context.Context, cluster *Cluster)
 		ng.Image = aws.ToString(image.ImageId)
 		ng.ImageDescription = aws.ToString(image.Description)
 		ng.Arch = string(image.Architecture)
-		ng.DefaultUsername = determineUsername(aws.ToString(image.Name), aws.ToString(image.Description))
+		ng.DefaultUsername = a.determineUsername(aws.ToString(image.Name), aws.ToString(image.Description))
 		ng.RootDeviceName = aws.ToString(image.RootDeviceName)
 		for _, dataDeivce := range image.BlockDeviceMappings {
 			if dataDeivce.DeviceName != nil && aws.ToString(dataDeivce.DeviceName) != ng.RootDeviceName {
@@ -359,7 +357,7 @@ func (a *AwsCloudUsecase) SetByNodeGroups(ctx context.Context, cluster *Cluster)
 		if ng.InstanceType != "" {
 			continue
 		}
-		instanceTypeFamiliy := getIntanceTypeFamilies(ng)
+		instanceTypeFamiliy := a.getIntanceTypeFamilies(ng)
 		instanceInfo, err := a.findInstanceType(ctx, instanceTypeFamiliy, ng.Cpu, ng.Gpu, ng.Memory)
 		if err != nil {
 			return err
@@ -720,7 +718,7 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 		cluster.BostionHost.ExternalIp = aws.ToString(instance.PublicIpAddress)
 		cluster.BostionHost.Status = NodeStatus_NODE_RUNNING
 		cluster.BostionHost.InstanceId = aws.ToString(instance.InstanceId)
-		cluster.BostionHost.User = determineUsername(aws.ToString(image.Name), aws.ToString(image.Description))
+		cluster.BostionHost.User = a.determineUsername(aws.ToString(image.Name), aws.ToString(image.Description))
 		// cpu
 		if instanceType.VCpuInfo != nil && instanceType.VCpuInfo.DefaultVCpus != nil {
 			cluster.BostionHost.Cpu = aws.ToInt32(instanceType.VCpuInfo.DefaultVCpus)
@@ -852,7 +850,6 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 				tags[AwsTagKeyType] = AwsResourcePublic
 			}
 			if nameVal, ok := tags[AwsTagKeyName]; !ok || nameVal != name {
-				tags[AwsTagKeyName] = name
 				err = a.createTags(ctx, aws.ToString(subnet.SubnetId), ResourceType_SUBNET, tags)
 				if err != nil {
 					return err
@@ -903,8 +900,8 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		subnetCidrs = append(subnetCidrs, subnetCidr)
 	}
 
-	// Create private subnets
 	for i, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
+		// Create private subnets
 		for j := 0; j < 2; j++ {
 			name := fmt.Sprintf("%s-private-subnet-%s-%d", cluster.Name, az.Name, j+1)
 			tags := map[string]string{
@@ -940,6 +937,7 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			a.log.Infof("private subnet %s created", aws.ToString(subnetOutput.Subnet.SubnetId))
 		}
 
+		// Create public subnet
 		name := fmt.Sprintf("%s-public-subnet-%s", cluster.Name, az.Name)
 		tags := map[string]string{
 			AwsTagKeyName: name,
@@ -1092,7 +1090,7 @@ func (a *AwsCloudUsecase) createNATGateways(ctx context.Context, cluster *Cluste
 		if natGateway.SubnetId == nil || len(natGateway.NatGatewayAddresses) == 0 {
 			continue
 		}
-		if cluster.GetCloudResourceByID(ResourceType_NAT_GATEWAY, aws.ToString(natGateway.NatGatewayId)) != nil {
+		if cluster.GetCloudResourceByRefID(ResourceType_NAT_GATEWAY, aws.ToString(natGateway.NatGatewayId)) != nil {
 			a.log.Infof("nat gateway %s already exists", aws.ToString(natGateway.NatGatewayId))
 			continue
 		}
@@ -1995,7 +1993,7 @@ func (a *AwsCloudUsecase) mapToElbv2Tags(tags map[string]string) []elasticloadba
 	return elbv2Tags
 }
 
-func getIntanceTypeFamilies(nodeGroup *NodeGroup) string {
+func (a *AwsCloudUsecase) getIntanceTypeFamilies(nodeGroup *NodeGroup) string {
 	if nodeGroup == nil || nodeGroup.Type == 0 {
 		return "m5.*"
 	}
@@ -2015,7 +2013,7 @@ func getIntanceTypeFamilies(nodeGroup *NodeGroup) string {
 	}
 }
 
-func determineUsername(amiName, amiDescription string) string {
+func (a *AwsCloudUsecase) determineUsername(amiName, amiDescription string) string {
 	amiName = strings.ToLower(amiName)
 	amiDescription = strings.ToLower(amiDescription)
 

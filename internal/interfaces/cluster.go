@@ -80,8 +80,8 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_ECS {
+		c.aliUc.Connections(cluster)
 		funcs = []func(context.Context, *biz.Cluster) error{
-			c.aliUc.Connections,
 			c.aliUc.GetAvailabilityZones,
 			c.aliUc.CreateNetwork,
 			c.aliUc.SetByNodeGroups,
@@ -114,8 +114,8 @@ func (c *ClusterInterface) Stop(ctx context.Context, cluster *biz.Cluster) (*biz
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_ECS {
+		c.aliUc.Connections(cluster)
 		funcs = []func(context.Context, *biz.Cluster) error{
-			c.aliUc.Connections,
 			c.aliUc.ManageInstance,
 			c.aliUc.ManageBostionHost,
 			c.aliUc.DeleteKeyPair,
