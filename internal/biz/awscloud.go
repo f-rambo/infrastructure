@@ -13,10 +13,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2Types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	eksTypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elasticloadbalancingv2Types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	smithy "github.com/aws/smithy-go"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 )
 
@@ -42,7 +46,9 @@ const (
 type AwsCloudUsecase struct {
 	ec2Client   *ec2.Client
 	elbv2Client *elasticloadbalancingv2.Client
+	eksClient   *eks.Client
 	log         *log.Helper
+	dryRun      bool
 }
 
 func NewAwsCloudUseCase(logger log.Logger) *AwsCloudUsecase {
@@ -50,6 +56,10 @@ func NewAwsCloudUseCase(logger log.Logger) *AwsCloudUsecase {
 		log: log.NewHelper(logger),
 	}
 	return c
+}
+
+func (a *AwsCloudUsecase) SetDryRun(dryRun bool) {
+	a.dryRun = dryRun
 }
 
 func (a *AwsCloudUsecase) Connections(ctx context.Context, cluster *Cluster) error {
@@ -66,6 +76,7 @@ func (a *AwsCloudUsecase) Connections(ctx context.Context, cluster *Cluster) err
 	}
 	a.ec2Client = ec2.NewFromConfig(cfg)
 	a.elbv2Client = elasticloadbalancingv2.NewFromConfig(cfg)
+	a.eksClient = eks.NewFromConfig(cfg)
 	return nil
 }
 
@@ -98,6 +109,94 @@ func (a *AwsCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 			Value: aws.ToString(az.RegionName),
 		})
 	}
+	return nil
+}
+
+func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *Cluster) error {
+	// Check if cluster already exists
+	existingClusters, err := a.eksClient.ListClusters(ctx, &eks.ListClustersInput{})
+	if err != nil {
+		return errors.Wrap(err, "failed to list EKS clusters")
+	}
+	for _, c := range existingClusters.Clusters {
+		if c == cluster.Name {
+			a.log.Infof("cluster %s already exists", cluster.Name)
+			return nil
+		}
+	}
+
+	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
+	subnets := cluster.GetCloudResource(ResourceType_SUBNET)
+	var subnetIds []string
+	for _, subnet := range subnets {
+		subnetIds = append(subnetIds, subnet.RefId)
+	}
+
+	// Create EKS cluster
+	createClusterInput := &eks.CreateClusterInput{
+		Name: aws.String(cluster.Name),
+		ResourcesVpcConfig: &eksTypes.VpcConfigRequest{
+			SubnetIds: subnetIds,
+		},
+		RoleArn: aws.String("arn:aws:iam::" + os.Getenv("AWS_ACCOUNT_ID") + ":role/eksClusterRole"),
+		Version: aws.String("1.27"),
+		Tags: map[string]string{
+			AwsTagKeyName: cluster.Name,
+			AwsTagKeyVpc:  vpc.RefId,
+		},
+	}
+
+	_, err = a.eksClient.CreateCluster(ctx, createClusterInput)
+	if err != nil {
+		return errors.Wrap(err, "failed to create EKS cluster")
+	}
+
+	// Wait for cluster to be active
+	waiter := eks.NewClusterActiveWaiter(a.eksClient)
+	err = waiter.Wait(ctx, &eks.DescribeClusterInput{
+		Name: aws.String(cluster.Name),
+	}, 20*time.Minute)
+	if err != nil {
+		return errors.Wrap(err, "failed waiting for EKS cluster to be active")
+	}
+
+	// Create node groups
+	for _, nodeGroup := range cluster.NodeGroups {
+		createNodeGroupInput := &eks.CreateNodegroupInput{
+			ClusterName:   aws.String(cluster.Name),
+			NodegroupName: aws.String(nodeGroup.Name),
+			ScalingConfig: &eksTypes.NodegroupScalingConfig{
+				DesiredSize: aws.Int32(int32(nodeGroup.TargetSize)),
+				MaxSize:     aws.Int32(int32(nodeGroup.MaxSize)),
+				MinSize:     aws.Int32(int32(nodeGroup.MinSize)),
+			},
+			Subnets:        subnetIds,
+			InstanceTypes:  []string{nodeGroup.InstanceType},
+			DiskSize:       aws.Int32(int32(nodeGroup.DataDisk)),
+			AmiType:        eksTypes.AMITypesAl2X8664,
+			NodeRole:       aws.String("arn:aws:iam::" + os.Getenv("AWS_ACCOUNT_ID") + ":role/eksNodeRole"),
+			Labels:         map[string]string{"role": nodeGroup.Name},
+			ReleaseVersion: aws.String("1.27.1-20230926"),
+			CapacityType:   eksTypes.CapacityTypesOnDemand,
+		}
+
+		_, err = a.eksClient.CreateNodegroup(ctx, createNodeGroupInput)
+		if err != nil {
+			return errors.Wrap(err, "failed to create node group "+nodeGroup.Name)
+		}
+
+		// Wait for node group to be active
+		nodeGroupWaiter := eks.NewNodegroupActiveWaiter(a.eksClient)
+		err = nodeGroupWaiter.Wait(ctx, &eks.DescribeNodegroupInput{
+			ClusterName:   aws.String(cluster.Name),
+			NodegroupName: aws.String(nodeGroup.Name),
+		}, 20*time.Minute)
+		if err != nil {
+			return errors.Wrap(err, "failed waiting for node group to be active")
+		}
+	}
+
+	a.log.Infof("kubernetes cluster %s created successfully", cluster.Name)
 	return nil
 }
 
@@ -766,9 +865,15 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 		return nil
 	}
 
+	vpcResource := &CloudResource{
+		Name: vpcName,
+		Tags: cluster.EncodeTags(vpcTags),
+		Type: ResourceType_VPC,
+	}
 	// Create VPC if it doesn't exist
 	vpcOutput, err := a.ec2Client.CreateVpc(ctx, &ec2.CreateVpcInput{
 		CidrBlock: aws.String(cluster.IpCidr),
+		DryRun:    aws.Bool(a.dryRun),
 		TagSpecifications: []ec2Types.TagSpecification{
 			{
 				ResourceType: ec2Types.ResourceTypeVpc,
@@ -776,9 +881,17 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 			},
 		},
 	})
-	if err != nil {
+	if err := a.handlerError(err); err != nil {
 		return errors.Wrap(err, "failed to create VPC")
 	}
+	if a.dryRun {
+		vpcResource.RefId = uuid.New().String()
+		cluster.AddCloudResource(vpcResource)
+		a.log.Infof("vpc %s created", vpcName)
+		return nil
+	}
+	vpcResource.RefId = aws.ToString(vpcOutput.Vpc.VpcId)
+	cluster.AddCloudResource(vpcResource)
 	_, err = a.ec2Client.ModifyVpcAttribute(ctx, &ec2.ModifyVpcAttributeInput{
 		VpcId: vpcOutput.Vpc.VpcId,
 		EnableDnsSupport: &ec2Types.AttributeBooleanValue{
@@ -786,15 +899,9 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 		},
 	})
 	if err != nil {
-		return errors.Wrap(err, "failed to enable DNS support for VPC")
+		return errors.Wrap(err, "failed to enable DNS support for VPC, but vpc is created")
 	}
-	cluster.AddCloudResource(&CloudResource{
-		RefId: aws.ToString(vpcOutput.Vpc.VpcId),
-		Name:  vpcName,
-		Tags:  cluster.EncodeTags(vpcTags),
-		Type:  ResourceType_VPC,
-	})
-	a.log.Infof("vpc %s created", cluster.GetSingleCloudResource(ResourceType_VPC).Id)
+	a.log.Infof("vpc %s created", vpcName)
 	return nil
 }
 
@@ -1139,7 +1246,7 @@ func (a *AwsCloudUsecase) createNATGateways(ctx context.Context, cluster *Cluste
 		if eip.AssociationId != nil || eip.InstanceId != nil || eip.NetworkInterfaceId != nil {
 			continue
 		}
-		if cluster.GetCloudResourceByID(ResourceType_ELASTIC_IP, aws.ToString(eip.AllocationId)) != nil {
+		if cluster.GetCloudResourceByRefID(ResourceType_ELASTIC_IP, aws.ToString(eip.AllocationId)) != nil {
 			a.log.Infof("elastic ip %s already exists", aws.ToString(eip.PublicIp))
 			continue
 		}
@@ -2037,4 +2144,15 @@ func (a *AwsCloudUsecase) determineUsername(amiName, amiDescription string) stri
 
 	// Default to ec2-user if we can't determine the username
 	return "ec2-user"
+}
+
+func (a *AwsCloudUsecase) handlerError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if e, ok := err.(*smithy.OperationError); ok {
+		a.log.Infof("%s test is passed", e.Operation())
+		return nil
+	}
+	return err
 }

@@ -90,6 +90,36 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 			c.aliUc.ManageBostionHost,
 		}
 	}
+	if cluster.Type == biz.ClusterType_GCP_GKE {
+		funcs = []func(context.Context, *biz.Cluster) error{
+			c.gcpUc.Connections,
+			c.gcpUc.GetAvailabilityZones,
+			c.gcpUc.CreateNetwork,
+			c.gcpUc.SetByNodeGroups,
+			c.gcpUc.ImportKeyPair,
+			c.gcpUc.ManageKubernetesCluster,
+		}
+	}
+	if cluster.Type == biz.ClusterType_AWS_EKS {
+		funcs = []func(context.Context, *biz.Cluster) error{
+			c.awsUc.Connections,
+			c.awsUc.GetAvailabilityZones,
+			c.awsUc.CreateNetwork,
+			c.awsUc.SetByNodeGroups,
+			c.aliUc.ImportKeyPair,
+			c.awsUc.ManageKubernetesCluster,
+		}
+	}
+	if cluster.Type == biz.ClusterType_ALICLOUD_AKS {
+		c.aliUc.Connections(cluster)
+		funcs = []func(context.Context, *biz.Cluster) error{
+			c.aliUc.GetAvailabilityZones,
+			c.aliUc.CreateNetwork,
+			c.aliUc.SetByNodeGroups,
+			c.aliUc.ImportKeyPair,
+			c.aliUc.ManageKubernetesCluster,
+		}
+	}
 	for _, f := range funcs {
 		err := f(ctx, cluster)
 		if err != nil {
@@ -118,6 +148,30 @@ func (c *ClusterInterface) Stop(ctx context.Context, cluster *biz.Cluster) (*biz
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.aliUc.ManageInstance,
 			c.aliUc.ManageBostionHost,
+			c.aliUc.DeleteKeyPair,
+			c.aliUc.DeleteNetwork,
+		}
+	}
+	if cluster.Type == biz.ClusterType_GCP_GKE {
+		funcs = []func(context.Context, *biz.Cluster) error{
+			c.gcpUc.Connections,
+			c.gcpUc.ManageKubernetesCluster,
+			c.gcpUc.DeleteKeyPair,
+			c.gcpUc.DeleteNetwork,
+		}
+	}
+	if cluster.Type == biz.ClusterType_AWS_EKS {
+		funcs = []func(context.Context, *biz.Cluster) error{
+			c.awsUc.Connections,
+			c.awsUc.ManageKubernetesCluster,
+			c.awsUc.DeleteKeyPair,
+			c.awsUc.DeleteNetwork,
+		}
+	}
+	if cluster.Type == biz.ClusterType_ALICLOUD_AKS {
+		c.aliUc.Connections(cluster)
+		funcs = []func(context.Context, *biz.Cluster) error{
+			c.aliUc.ManageKubernetesCluster,
 			c.aliUc.DeleteKeyPair,
 			c.aliUc.DeleteNetwork,
 		}

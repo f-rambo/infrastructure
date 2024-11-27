@@ -36,7 +36,6 @@ internal:
  	       --go_out=paths=source_relative:. \
  	       --go-grpc_out=paths=source_relative:. \
 	       $(INTERNAL_PROTO_FILES)
-	find internal -name "*.pb.go" -type f -exec protoc-go-inject-tag -input={} \;
 
 .PHONY: build
 build:

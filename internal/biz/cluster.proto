@@ -20,6 +20,7 @@ enum ClusterType {
       AWS_EKS = 2;
       ALICLOUD_ECS = 3;
       ALICLOUD_AKS = 4;
+      GCP_GKE = 5;
 }
 
 enum ClusterLevel {
