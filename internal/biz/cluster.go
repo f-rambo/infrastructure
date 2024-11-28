@@ -125,6 +125,14 @@ func (c *Cluster) GetCloudResourceByTags(resourceType ResourceType, tagKeyValues
 	return cloudResources
 }
 
+func (c *Cluster) GetCloudResourceByTagsSingle(resourceType ResourceType, tagKeyValues ...string) *CloudResource {
+	resources := c.GetCloudResourceByTags(resourceType, tagKeyValues...)
+	if len(resources) == 0 {
+		return nil
+	}
+	return resources[0]
+}
+
 func (c *Cluster) EncodeTags(tags map[string]string) string {
 	tagStr := ""
 	for key, value := range tags {
@@ -159,11 +167,36 @@ func (c *Cluster) DeleteCloudResource(resourceType ResourceType) {
 // delete cloud resource by resourceType and id
 func (c *Cluster) DeleteCloudResourceByID(resourceType ResourceType, id string) {
 	cloudResources := make([]*CloudResource, 0)
-	for _, resources := range c.CloudResources {
-		if resources.Type == resourceType && resources.Id != id {
-			cloudResources = append(cloudResources, resources)
+	index := -1
+	for i, resources := range c.CloudResources {
+		if resources.Type == resourceType && resources.Id == id {
+			index = i
+			break
 		}
 	}
+	if index == -1 {
+		return
+	}
+	cloudResources = append(cloudResources, c.CloudResources[:index]...)
+	cloudResources = append(cloudResources, c.CloudResources[index+1:]...)
+	c.CloudResources = cloudResources
+}
+
+// delete cloud resource by resourceType and refID
+func (c *Cluster) DeleteCloudResourceByRefID(resourceType ResourceType, refID string) {
+	cloudResources := make([]*CloudResource, 0)
+	index := -1
+	for i, resources := range c.CloudResources {
+		if resources.Type == resourceType && resources.RefId != refID {
+			index = i
+			break
+		}
+	}
+	if index == -1 {
+		return
+	}
+	cloudResources = append(cloudResources, c.CloudResources[:index]...)
+	cloudResources = append(cloudResources, c.CloudResources[index+1:]...)
 	c.CloudResources = cloudResources
 }
 
@@ -172,6 +205,11 @@ func (c *Cluster) DeleteCloudResourceByTags(resourceType ResourceType, tagKeyVal
 	cloudResources := make([]*CloudResource, 0)
 	for _, resource := range c.CloudResources {
 		if resource.Tags == "" {
+			cloudResources = append(cloudResources, resource)
+			continue
+		}
+		if resource.Type != resourceType {
+			cloudResources = append(cloudResources, resource)
 			continue
 		}
 		match := true

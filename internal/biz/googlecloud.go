@@ -848,7 +848,7 @@ func (g *GoogleCloudUsecase) createSecurityGroup(ctx context.Context, cluster *C
 	return nil
 }
 
-func (g *GoogleCloudUsecase) waitForOperation(ctx context.Context, op *compute.Operation) error {
+func (g *GoogleCloudUsecase) waitForOperation(_ context.Context, op *compute.Operation) error {
 	for {
 		result, err := g.computeService.GlobalOperations.Get(g.projectID, op.Name).Do()
 		if err != nil {
