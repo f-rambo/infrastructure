@@ -203,7 +203,7 @@ func (g *GoogleCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluste
 			Name: ng.Name,
 			Config: &containerpb.NodeConfig{
 				MachineType: ng.InstanceType,
-				DiskSizeGb:  int32(ng.DataDisk),
+				DiskSizeGb:  int32(ng.DataDiskSize),
 				OauthScopes: []string{
 					"https://www.googleapis.com/auth/devstorage.read_only",
 					"https://www.googleapis.com/auth/logging.write",

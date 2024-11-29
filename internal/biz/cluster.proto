@@ -78,6 +78,7 @@ enum NodeStatus {
       NODE_DELETING = 3;
       NODE_DELETED = 4;
       NODE_ERROR = 5;
+      NODE_PENDING = 6;
 }
 
 enum NodeGroupType {
@@ -109,7 +110,7 @@ message Node {
 message NodeGroup {
       string id = 1; // @gotags: gorm:"column:id;primaryKey; NOT NULL"
       string name = 2; // @gotags: gorm:"column:name; default:''; NOT NULL"
-      NodeGroupType type = 3; // @gotags: gorm:"column:type; default:''; NOT NULL"
+      NodeGroupType type = 3; // @gotags: gorm:"column:type; default:0; NOT NULL"
       string image = 4; // @gotags: gorm:"column:image; default:''; NOT NULL"
       string image_description = 5; // @gotags: gorm:"column:image_description; default:''; NOT NULL"
       string os = 6; // @gotags: gorm:"column:os; default:''; NOT NULL"
@@ -118,23 +119,21 @@ message NodeGroup {
       int32 memory = 9; // @gotags: gorm:"column:memory; default:0; NOT NULL"
       int32 gpu = 10; // @gotags: gorm:"column:gpu; default:0; NOT NULL"
       string gpu_spec = 11; // @gotags: gorm:"column:gpu_spec; default:''; NOT NULL"
-      int32 data_disk = 12; // @gotags: gorm:"column:data_disk; default:0; NOT NULL"
-      string root_device_name = 13; // @gotags: gorm:"column:root_device_name; default:''; NOT NULL"
-      string data_device_name = 14; // @gotags: gorm:"column:data_device_name; default:''; NOT NULL"
-      int32 min_size = 15; // @gotags: gorm:"column:min_size; default:0; NOT NULL"
-      int32 max_size = 16; // @gotags: gorm:"column:max_size; default:0; NOT NULL"
-      int32 target_size = 17; // @gotags: gorm:"column:target_size; default:0; NOT NULL"
-      string instance_type = 18; // @gotags: gorm:"column:instance_type; default:''; NOT NULL"
-      string default_username = 19; // @gotags: gorm:"column:default_username; default:''; NOT NULL"
-      float node_price = 20; // @gotags: gorm:"column:node_price; default:0; NOT NULL"
-      float pod_price = 21; // @gotags: gorm:"column:pod_price; default:0; NOT NULL"
-      string zone = 22; // @gotags: gorm:"column:zone; default:''; NOT NULL"
-      string subnet_ip_cidr = 23; // @gotags: gorm:"column:subnet_ip_cidr; default:''; NOT NULL"
-      string node_init_script = 24; // @gotags: gorm:"column:cloud_init_script; default:''; NOT NULL"
-      int64 cluster_id = 25; // @gotags: gorm:"column:cluster_id; default:0; NOT NULL"
-      google.protobuf.Timestamp created_at = 26; // @gotags: gorm:"column:created_at; default:CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp updated_at = 27; // @gotags: gorm:"column:updated_at; default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp deleted_at = 28; // @gotags: gorm:"column:deleted_at; default:NULL"
+      int32 system_disk_size = 12; // @gotags: gorm:"column:system_disk_size; default:0; NOT NULL"
+      int32 data_disk_size = 13; // @gotags: gorm:"column:data_disk_size; default:0; NOT NULL"
+      string root_device_name = 14; // @gotags: gorm:"column:root_device_name; default:''; NOT NULL"
+      string data_device_name = 15; // @gotags: gorm:"column:data_device_name; default:''; NOT NULL"
+      int32 min_size = 16; // @gotags: gorm:"column:min_size; default:0; NOT NULL"
+      int32 max_size = 17; // @gotags: gorm:"column:max_size; default:0; NOT NULL"
+      int32 target_size = 18; // @gotags: gorm:"column:target_size; default:0; NOT NULL"
+      string instance_type = 19; // @gotags: gorm:"column:instance_type; default:''; NOT NULL"
+      string default_username = 20; // @gotags: gorm:"column:default_username; default:''; NOT NULL"
+      float node_price = 21; // @gotags: gorm:"column:node_price; default:0; NOT NULL"
+      float pod_price = 22; // @gotags: gorm:"column:pod_price; default:0; NOT NULL"
+      string zone = 23; // @gotags: gorm:"column:zone; default:''; NOT NULL"
+      string subnet_ip_cidr = 24; // @gotags: gorm:"column:subnet_ip_cidr; default:''; NOT NULL"
+      string node_init_script = 25; // @gotags: gorm:"column:cloud_init_script; default:''; NOT NULL"
+      int64 cluster_id = 26; // @gotags: gorm:"column:cluster_id; default:0; NOT NULL"
 }
 
 message BostionHost {
@@ -171,6 +170,8 @@ enum ResourceType {
       AVAILABILITY_ZONES = 9;
       KEY_PAIR = 10;
       VPC_ENDPOINT_S3 = 11;
+      DATA_DEVICE = 12;
+      INSTANCE_TYPE = 13;
 }
 
 message CloudResource {

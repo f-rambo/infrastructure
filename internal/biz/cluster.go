@@ -143,6 +143,9 @@ func (c *Cluster) EncodeTags(tags map[string]string) string {
 
 func (c *Cluster) DecodeTags(tags string) map[string]string {
 	tagsMap := make(map[string]string)
+	if tags == "" {
+		return tagsMap
+	}
 	for _, tag := range strings.Split(tags, ",") {
 		tagKeyValue := strings.Split(tag, ":")
 		if len(tagKeyValue) != 2 {

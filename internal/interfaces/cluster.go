@@ -90,16 +90,6 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 			c.aliUc.ManageBostionHost,
 		}
 	}
-	if cluster.Type == biz.ClusterType_GCP_GKE {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.gcpUc.Connections,
-			c.gcpUc.GetAvailabilityZones,
-			c.gcpUc.CreateNetwork,
-			c.gcpUc.SetByNodeGroups,
-			c.gcpUc.ImportKeyPair,
-			c.gcpUc.ManageKubernetesCluster,
-		}
-	}
 	if cluster.Type == biz.ClusterType_AWS_EKS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
@@ -118,6 +108,16 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 			c.aliUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
 			c.aliUc.ManageKubernetesCluster,
+		}
+	}
+	if cluster.Type == biz.ClusterType_GCP_GKE {
+		funcs = []func(context.Context, *biz.Cluster) error{
+			c.gcpUc.Connections,
+			c.gcpUc.GetAvailabilityZones,
+			c.gcpUc.CreateNetwork,
+			c.gcpUc.SetByNodeGroups,
+			c.gcpUc.ImportKeyPair,
+			c.gcpUc.ManageKubernetesCluster,
 		}
 	}
 	for _, f := range funcs {
@@ -163,7 +163,7 @@ func (c *ClusterInterface) Stop(ctx context.Context, cluster *biz.Cluster) (*biz
 	if cluster.Type == biz.ClusterType_AWS_EKS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
-			c.awsUc.ManageKubernetesCluster,
+			c.awsUc.DeleteKubernetesCluster,
 			c.awsUc.DeleteKeyPair,
 			c.awsUc.DeleteNetwork,
 		}
@@ -302,7 +302,7 @@ func (c *ClusterInterface) GetNodesSystemInfo(ctx context.Context, cluster *biz.
 				case "gpu_info":
 					nodegroup.GpuSpec = cast.ToString(val)
 				case "disk":
-					nodegroup.DataDisk = cast.ToInt32(val)
+					nodegroup.DataDiskSize = cast.ToInt32(val)
 				case "inner_ip":
 					node.InternalIp = cast.ToString(val)
 				}

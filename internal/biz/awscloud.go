@@ -2,7 +2,6 @@ package biz
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -17,6 +16,9 @@ import (
 	eksTypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elasticloadbalancingv2Types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	iamTypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
 	smithy "github.com/aws/smithy-go"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
@@ -44,11 +46,13 @@ const (
 )
 
 type AwsCloudUsecase struct {
-	ec2Client   *ec2.Client
-	elbv2Client *elasticloadbalancingv2.Client
-	eksClient   *eks.Client
-	log         *log.Helper
-	dryRun      bool
+	ec2Client           *ec2.Client
+	elbv2Client         *elasticloadbalancingv2.Client
+	eksClient           *eks.Client
+	servicequotasClient *servicequotas.Client
+	iamClient           *iam.Client
+	log                 *log.Helper
+	dryRun              bool
 }
 
 func NewAwsCloudUseCase(logger log.Logger) *AwsCloudUsecase {
@@ -77,6 +81,8 @@ func (a *AwsCloudUsecase) Connections(ctx context.Context, cluster *Cluster) err
 	a.ec2Client = ec2.NewFromConfig(cfg)
 	a.elbv2Client = elasticloadbalancingv2.NewFromConfig(cfg)
 	a.eksClient = eks.NewFromConfig(cfg)
+	a.servicequotasClient = servicequotas.NewFromConfig(cfg)
+	a.iamClient = iam.NewFromConfig(cfg)
 	return nil
 }
 
@@ -113,78 +119,116 @@ func (a *AwsCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 }
 
 func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *Cluster) error {
-	// Check if cluster already exists
-	existingClusters, err := a.eksClient.ListClusters(ctx, &eks.ListClustersInput{})
+	clusters, err := a.eksClient.ListClusters(ctx, &eks.ListClustersInput{
+		MaxResults: aws.Int32(100),
+	})
 	if err != nil {
 		return errors.Wrap(err, "failed to list EKS clusters")
 	}
-	for _, c := range existingClusters.Clusters {
+	clusterCreted := false
+	for _, c := range clusters.Clusters {
 		if c == cluster.Name {
-			a.log.Infof("cluster %s already exists", cluster.Name)
-			return nil
+			clusterCreted = true
+			break
+		}
+	}
+	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
+	if vpc == nil {
+		return errors.New("vpc not found")
+	}
+	var subnetIds []string
+	for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, AwsTagKeyType, AwsResourcePrivate) {
+		subnetIds = append(subnetIds, subnet.RefId)
+	}
+	if len(subnetIds) == 0 {
+		return errors.New("failed to get private subnets")
+	}
+
+	roleArn, err := a.createEKSClusterRole(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	if !clusterCreted {
+		// Create EKS cluster
+		createClusterInput := &eks.CreateClusterInput{
+			Name: aws.String(cluster.Name),
+			ResourcesVpcConfig: &eksTypes.VpcConfigRequest{
+				SubnetIds: subnetIds,
+			},
+			RoleArn: aws.String(roleArn),
+			Version: aws.String(cluster.Version),
+			Tags:    map[string]string{AwsTagKeyName: cluster.Name},
+		}
+		_, err = a.eksClient.CreateCluster(ctx, createClusterInput)
+		if err != nil {
+			return errors.Wrap(err, "failed to create EKS cluster")
+		}
+		// Wait for cluster to be active
+		waiter := eks.NewClusterActiveWaiter(a.eksClient)
+		err = waiter.Wait(ctx, &eks.DescribeClusterInput{Name: aws.String(cluster.Name)}, 20*time.Minute)
+		if err != nil {
+			return errors.Wrap(err, "failed waiting for EKS cluster to be active")
 		}
 	}
 
-	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
-	subnets := cluster.GetCloudResource(ResourceType_SUBNET)
-	var subnetIds []string
-	for _, subnet := range subnets {
-		subnetIds = append(subnetIds, subnet.RefId)
-	}
-
-	// Create EKS cluster
-	createClusterInput := &eks.CreateClusterInput{
-		Name: aws.String(cluster.Name),
-		ResourcesVpcConfig: &eksTypes.VpcConfigRequest{
-			SubnetIds: subnetIds,
-		},
-		RoleArn: aws.String("arn:aws:iam::" + os.Getenv("AWS_ACCOUNT_ID") + ":role/eksClusterRole"),
-		Version: aws.String("1.27"),
-		Tags: map[string]string{
-			AwsTagKeyName: cluster.Name,
-			AwsTagKeyVpc:  vpc.RefId,
-		},
-	}
-
-	_, err = a.eksClient.CreateCluster(ctx, createClusterInput)
-	if err != nil {
-		return errors.Wrap(err, "failed to create EKS cluster")
-	}
-
-	// Wait for cluster to be active
-	waiter := eks.NewClusterActiveWaiter(a.eksClient)
-	err = waiter.Wait(ctx, &eks.DescribeClusterInput{
-		Name: aws.String(cluster.Name),
-	}, 20*time.Minute)
-	if err != nil {
-		return errors.Wrap(err, "failed waiting for EKS cluster to be active")
-	}
-
-	// Create node groups
 	for _, nodeGroup := range cluster.NodeGroups {
-		createNodeGroupInput := &eks.CreateNodegroupInput{
+		// find node group
+		nodeGroupRes, err := a.eksClient.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+			ClusterName:   aws.String(cluster.Name),
+			NodegroupName: aws.String(nodeGroup.Name),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to describe node group")
+		}
+		if nodeGroupRes.Nodegroup == nil {
+			// create node groups
+			createNodeGroupInput := &eks.CreateNodegroupInput{
+				ClusterName:   aws.String(cluster.Name),
+				NodegroupName: aws.String(nodeGroup.Name),
+				ScalingConfig: &eksTypes.NodegroupScalingConfig{
+					DesiredSize: aws.Int32(nodeGroup.TargetSize),
+					MaxSize:     aws.Int32(nodeGroup.MaxSize),
+					MinSize:     aws.Int32(nodeGroup.MinSize),
+				},
+				Subnets:        subnetIds,
+				InstanceTypes:  []string{nodeGroup.InstanceType},
+				DiskSize:       aws.Int32(int32(nodeGroup.DataDiskSize)),
+				AmiType:        eksTypes.AMITypesAl2X8664,
+				NodeRole:       aws.String(roleArn),
+				Labels:         map[string]string{"role": nodeGroup.Name},
+				ReleaseVersion: aws.String("1.27.1-20230926"),
+				CapacityType:   eksTypes.CapacityTypesOnDemand,
+			}
+			// a.eksClient.UpdateNodegroupConfig()
+			_, err = a.eksClient.CreateNodegroup(ctx, createNodeGroupInput)
+			if err != nil {
+				return errors.Wrap(err, "failed to create node group "+nodeGroup.Name)
+			}
+
+			// Wait for node group to be active
+			nodeGroupWaiter := eks.NewNodegroupActiveWaiter(a.eksClient)
+			err = nodeGroupWaiter.Wait(ctx, &eks.DescribeNodegroupInput{
+				ClusterName:   aws.String(cluster.Name),
+				NodegroupName: aws.String(nodeGroup.Name),
+			}, 20*time.Minute)
+			if err != nil {
+				return errors.Wrap(err, "failed waiting for node group to be active")
+			}
+			continue
+		}
+		// update node group
+		_, err = a.eksClient.UpdateNodegroupConfig(ctx, &eks.UpdateNodegroupConfigInput{
 			ClusterName:   aws.String(cluster.Name),
 			NodegroupName: aws.String(nodeGroup.Name),
 			ScalingConfig: &eksTypes.NodegroupScalingConfig{
-				DesiredSize: aws.Int32(int32(nodeGroup.TargetSize)),
-				MaxSize:     aws.Int32(int32(nodeGroup.MaxSize)),
-				MinSize:     aws.Int32(int32(nodeGroup.MinSize)),
+				DesiredSize: aws.Int32(nodeGroup.TargetSize),
+				MaxSize:     aws.Int32(nodeGroup.MaxSize),
+				MinSize:     aws.Int32(nodeGroup.MinSize),
 			},
-			Subnets:        subnetIds,
-			InstanceTypes:  []string{nodeGroup.InstanceType},
-			DiskSize:       aws.Int32(int32(nodeGroup.DataDisk)),
-			AmiType:        eksTypes.AMITypesAl2X8664,
-			NodeRole:       aws.String("arn:aws:iam::" + os.Getenv("AWS_ACCOUNT_ID") + ":role/eksNodeRole"),
-			Labels:         map[string]string{"role": nodeGroup.Name},
-			ReleaseVersion: aws.String("1.27.1-20230926"),
-			CapacityType:   eksTypes.CapacityTypesOnDemand,
-		}
-
-		_, err = a.eksClient.CreateNodegroup(ctx, createNodeGroupInput)
+		})
 		if err != nil {
-			return errors.Wrap(err, "failed to create node group "+nodeGroup.Name)
+			return errors.Wrap(err, "failed to update node group "+nodeGroup.Name)
 		}
-
 		// Wait for node group to be active
 		nodeGroupWaiter := eks.NewNodegroupActiveWaiter(a.eksClient)
 		err = nodeGroupWaiter.Wait(ctx, &eks.DescribeNodegroupInput{
@@ -195,8 +239,39 @@ func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 			return errors.Wrap(err, "failed waiting for node group to be active")
 		}
 	}
-
 	a.log.Infof("kubernetes cluster %s created successfully", cluster.Name)
+	return nil
+}
+
+// delete kubernetes cluster
+func (a *AwsCloudUsecase) DeleteKubernetesCluster(ctx context.Context, cluster *Cluster) error {
+	for _, nodeGroup := range cluster.NodeGroups {
+		_, err := a.eksClient.DeleteNodegroup(ctx, &eks.DeleteNodegroupInput{
+			ClusterName:   aws.String(cluster.Name),
+			NodegroupName: aws.String(nodeGroup.Name),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to delete node group "+nodeGroup.Name)
+		}
+	}
+	clusters, err := a.eksClient.ListClusters(ctx, &eks.ListClustersInput{
+		MaxResults: aws.Int32(100),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to list EKS clusters")
+	}
+	for _, c := range clusters.Clusters {
+		if c == cluster.Name {
+			_, err = a.eksClient.DeleteCluster(ctx, &eks.DeleteClusterInput{
+				Name: aws.String(cluster.Name),
+			})
+			if err != nil {
+				return errors.Wrap(err, "failed to delete EKS cluster")
+			}
+			break
+		}
+	}
+	a.log.Infof("kubernetes cluster %s deleted successfully", cluster.Name)
 	return nil
 }
 
@@ -517,12 +592,13 @@ func (a *AwsCloudUsecase) ImportKeyPair(ctx context.Context, cluster *Cluster) e
 				Tags:  cluster.EncodeTags(tags),
 				Type:  ResourceType_KEY_PAIR,
 			})
-			a.log.Info("key pair found")
+			a.log.Infof("%s key pair found", keyPair.KeyName)
 		}
 		return nil
 	}
 
 	keyPairOutput, err := a.ec2Client.ImportKeyPair(ctx, &ec2.ImportKeyPairInput{
+		DryRun:            aws.Bool(a.dryRun),
 		KeyName:           aws.String(keyName),
 		PublicKeyMaterial: []byte(cluster.PublicKey),
 		TagSpecifications: []ec2Types.TagSpecification{
@@ -532,16 +608,21 @@ func (a *AwsCloudUsecase) ImportKeyPair(ctx context.Context, cluster *Cluster) e
 			},
 		},
 	})
-	if err != nil {
-		return fmt.Errorf("failed to import key pair: %v", err)
+	if err := a.handlerError(err); err != nil {
+		return errors.Wrap(err, "failed to import key pair")
 	}
-	a.log.Info("key pair imported")
-	cluster.AddCloudResource(&CloudResource{
-		Name:  keyName,
-		RefId: aws.ToString(keyPairOutput.KeyPairId),
-		Tags:  cluster.EncodeTags(tags),
-		Type:  ResourceType_KEY_PAIR,
-	})
+	keyPairCloudResource := &CloudResource{
+		Name: keyName,
+		Tags: cluster.EncodeTags(tags),
+		Type: ResourceType_KEY_PAIR,
+	}
+	if a.dryRun {
+		keyPairCloudResource.RefId = uuid.New().String()
+	} else {
+		keyPairCloudResource.RefId = aws.ToString(keyPairOutput.KeyPairId)
+	}
+	cluster.AddCloudResource(keyPairCloudResource)
+	a.log.Info("% key pair imported", keyName)
 	return nil
 }
 
@@ -566,17 +647,54 @@ func (a *AwsCloudUsecase) DeleteKeyPair(ctx context.Context, cluster *Cluster) e
 	return nil
 }
 
+// get instance quota number
+func (a *AwsCloudUsecase) GetInstanceQuota(ctx context.Context, cluster *Cluster) error {
+	servicequotas, err := a.servicequotasClient.ListServiceQuotas(ctx, &servicequotas.ListServiceQuotasInput{
+		ServiceCode: aws.String("ec2"),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to list service quotas")
+	}
+	for _, quota := range servicequotas.Quotas {
+		fmt.Println("Quota service code:", aws.ToString(quota.ServiceCode))
+		fmt.Println("Quota service name:", aws.ToString(quota.ServiceName))
+		fmt.Printf("Quota Name: %s\n", aws.ToString(quota.QuotaName))
+		fmt.Printf("Quota Value: %.2f\n", aws.ToFloat64(quota.Value))
+		fmt.Printf("Quota Type: %s\n", aws.ToString(quota.Unit))
+		fmt.Println("-----")
+	}
+	return nil
+}
+
 func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) error {
-	// Delete instances
+	vpcCloudResource := cluster.GetSingleCloudResource(ResourceType_VPC)
+	if vpcCloudResource == nil {
+		return errors.New("vpc not found")
+	}
+	instances, err := a.getInstances(ctx, vpcCloudResource)
+	if err != nil {
+		return err
+	}
+	// clear history node
+	for _, node := range cluster.Nodes {
+		nodeExits := false
+		for _, instance := range instances {
+			if node.InstanceId == aws.ToString(instance.InstanceId) {
+				nodeExits = true
+				break
+			}
+		}
+		if !nodeExits && (node.Status == NodeStatus_NODE_RUNNING || node.Status == NodeStatus_NODE_PENDING) {
+			node.InstanceId = ""
+			node.Status = NodeStatus_NODE_DELETED
+		}
+	}
+	// handler needdelete instances
 	needDeleteInstanceIDs := make([]string, 0)
 	for _, node := range cluster.Nodes {
 		if node.Status == NodeStatus_NODE_DELETING && node.InstanceId != "" {
 			needDeleteInstanceIDs = append(needDeleteInstanceIDs, node.InstanceId)
 		}
-	}
-	instances, err := a.getInstances(ctx, cluster, []string{}, []string{fmt.Sprintf("%s-node*", cluster.Name)})
-	if err != nil {
-		return err
 	}
 	deleteInstanceIDs := make([]string, 0)
 	for _, instance := range instances {
@@ -586,16 +704,18 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 	}
 	if len(deleteInstanceIDs) > 0 {
 		_, err = a.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			DryRun:      aws.Bool(a.dryRun),
 			InstanceIds: deleteInstanceIDs,
 		})
-		if err != nil {
+		if err := a.handlerError(err); err != nil {
 			return errors.Wrap(err, "failed to terminate instances")
 		}
+		if a.dryRun {
+			return nil
+		}
 		waiter := ec2.NewInstanceTerminatedWaiter(a.ec2Client)
-		err := waiter.Wait(ctx, &ec2.DescribeInstancesInput{
-			InstanceIds: deleteInstanceIDs,
-		}, time.Duration(len(deleteInstanceIDs))*TimeoutPerInstance)
-		if err != nil {
+		err := waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: deleteInstanceIDs}, time.Duration(len(deleteInstanceIDs))*TimeoutPerInstance)
+		if err := a.handlerError(err); err != nil {
 			return fmt.Errorf("failed to wait for instance termination: %w", err)
 		}
 		for _, node := range cluster.Nodes {
@@ -608,100 +728,100 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 
 	// Create instances
 	instanceIds := make([]string, 0)
-	for index, node := range cluster.Nodes {
-		if node.Status != NodeStatus_NODE_CREATING {
-			continue
-		}
-		nodeGroup := cluster.GetNodeGroup(node.NodeGroupId)
-		nodeTags := make(map[string]string)
-		if node.Labels != "" {
-			err = json.Unmarshal([]byte(node.Labels), &nodeTags)
-			if err != nil {
-				return errors.Wrap(err, "failed to parse labels")
+	instanceOuputs := make([]ec2Types.Instance, 0)
+	for index, nodeGroup := range cluster.NodeGroups {
+		var currentTargetSize int32 = 0
+		for _, node := range cluster.Nodes {
+			if node.NodeGroupId == nodeGroup.Id && node.Status == NodeStatus_NODE_CREATING {
+				node.User = nodeGroup.DefaultUsername
+				currentTargetSize++
 			}
 		}
-		nodeTags[AwsTagKeyName] = node.Name
+		sgs := cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, AwsTagKeyType, AwsResourceHttpSG)
+		sgIDs := make([]string, 0)
+		for _, v := range sgs {
+			sgIDs = append(sgIDs, v.RefId)
+		}
+		privateSubnetID := a.distributeNodeSubnets(cluster, index)
 		// root Volume
 		blockDeviceMappings := []ec2Types.BlockDeviceMapping{
 			{
 				DeviceName: aws.String(nodeGroup.RootDeviceName),
 				Ebs: &ec2Types.EbsBlockDevice{
-					VolumeSize:          aws.Int32(30),
-					VolumeType:          ec2Types.VolumeTypeGp3,
+					VolumeSize:          aws.Int32(nodeGroup.SystemDiskSize),
+					VolumeType:          ec2Types.VolumeType(nodeGroup.RootDeviceName),
 					DeleteOnTermination: aws.Bool(true),
 				},
 			},
 		}
-		if nodeGroup.DataDisk > 0 {
+		// data Volume
+		if nodeGroup.DataDiskSize > 0 {
 			blockDeviceMappings = append(blockDeviceMappings, ec2Types.BlockDeviceMapping{
 				DeviceName: aws.String(nodeGroup.DataDeviceName),
 				Ebs: &ec2Types.EbsBlockDevice{
-					VolumeSize:          aws.Int32(nodeGroup.DataDisk),
-					VolumeType:          ec2Types.VolumeTypeGp3,
+					VolumeSize:          aws.Int32(nodeGroup.DataDiskSize),
+					VolumeType:          ec2Types.VolumeType(nodeGroup.DataDeviceName),
 					DeleteOnTermination: aws.Bool(true),
 				},
 			})
 		}
-		sgs := cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, AwsTagKeyType, AwsResourceHttpSG)
-		if sgs == nil {
-			return errors.Wrap(err, "security group not found")
-		}
-		sgIDs := make([]string, 0)
-		for _, v := range sgs {
-			sgIDs = append(sgIDs, v.RefId)
-		}
-		keyName := cluster.GetSingleCloudResource(ResourceType_KEY_PAIR).Name
-		privateSubnetID := a.distributeNodeSubnets(cluster, index)
-		instanceOutput, err := a.ec2Client.RunInstances(ctx, &ec2.RunInstancesInput{
+		instancesOutput, err := a.ec2Client.RunInstances(ctx, &ec2.RunInstancesInput{
+			DryRun:              aws.Bool(a.dryRun),
 			ImageId:             aws.String(nodeGroup.Image),
 			InstanceType:        ec2Types.InstanceType(nodeGroup.InstanceType),
-			KeyName:             aws.String(keyName),
-			MaxCount:            aws.Int32(1),
-			MinCount:            aws.Int32(1),
+			KeyName:             aws.String(cluster.GetSingleCloudResource(ResourceType_KEY_PAIR).Name),
+			MaxCount:            aws.Int32(currentTargetSize),
+			MinCount:            aws.Int32(currentTargetSize),
 			SecurityGroupIds:    sgIDs,
 			SubnetId:            aws.String(privateSubnetID),
 			BlockDeviceMappings: blockDeviceMappings,
-			TagSpecifications: []ec2Types.TagSpecification{
-				{
-					ResourceType: ec2Types.ResourceTypeInstance,
-					Tags:         a.mapToEc2Tags(nodeTags),
-				},
-			},
 		})
-		if err != nil {
+		if err := a.handlerError(err); err != nil {
 			return errors.Wrap(err, "failed to run instances")
 		}
-		for _, instance := range instanceOutput.Instances {
-			a.log.Info("instance createing", "name", node.Name, "id", aws.ToString(instance.InstanceId))
-			if instance.PrivateIpAddress != nil {
-				node.InternalIp = aws.ToString(instance.PrivateIpAddress)
-			}
-			if instance.PublicIpAddress != nil {
-				node.ExternalIp = aws.ToString(instance.PublicIpAddress)
-			}
-			node.InstanceId = aws.ToString(instance.InstanceId)
-			instanceIds = append(instanceIds, aws.ToString(instance.InstanceId))
+		if instancesOutput == nil {
+			continue
 		}
-		node.User = nodeGroup.DefaultUsername
-		node.Status = NodeStatus_NODE_CREATING
+		for _, instance := range instancesOutput.Instances {
+			instanceIds = append(instanceIds, aws.ToString(instance.InstanceId))
+			instanceOuputs = append(instanceOuputs, instance)
+			for _, blockDevice := range instance.BlockDeviceMappings {
+				cluster.AddCloudResource(&CloudResource{
+					Name:         aws.ToString(blockDevice.DeviceName),
+					RefId:        aws.ToString(blockDevice.Ebs.VolumeId),
+					AssociatedId: aws.ToString(instance.InstanceId),
+					Value:        aws.ToString(blockDevice.Ebs.AssociatedResource),
+					Type:         ResourceType_DATA_DEVICE,
+				})
+			}
+		}
 	}
-
 	// wait for instance running
 	if len(instanceIds) > 0 {
-		waiter := ec2.NewInstanceRunningWaiter(a.ec2Client)
-		err := waiter.Wait(ctx, &ec2.DescribeInstancesInput{
-			InstanceIds: instanceIds,
-		}, time.Duration(len(instanceIds))*TimeoutPerInstance)
-		if err != nil {
-			return fmt.Errorf("failed to wait for instance running: %w", err)
+		if a.dryRun {
+			return nil
 		}
-		for _, instanceId := range instanceIds {
-			for _, node := range cluster.Nodes {
-				if node.InstanceId == instanceId {
-					node.Status = NodeStatus_NODE_RUNNING
-					break
-				}
+		waiter := ec2.NewInstanceRunningWaiter(a.ec2Client)
+		err := waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: instanceIds}, time.Duration(len(instanceIds))*TimeoutPerInstance)
+		if err != nil {
+			return errors.Wrap(err, "failed to wait for instance running")
+		}
+	}
+
+	// copy instance info to node
+	for _, instance := range instanceOuputs {
+		for _, node := range cluster.Nodes {
+			if node.Status != NodeStatus_NODE_CREATING {
+				continue
 			}
+			nodeTags := cluster.DecodeTags(node.Labels)
+			nodeTags[AwsTagKeyName] = node.Name
+			a.createTags(ctx, node.InstanceId, ResourceType_INSTANCE_TYPE, nodeTags)
+			node.InstanceId = aws.ToString(instance.InstanceId)
+			node.InternalIp = aws.ToString(instance.PrivateIpAddress)
+			node.ExternalIp = aws.ToString(instance.PublicIpAddress)
+			node.Status = NodeStatus_NODE_PENDING
+			break
 		}
 	}
 	return nil
@@ -712,19 +832,27 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	if cluster.BostionHost == nil {
 		return nil
 	}
+	vpcCloudResource := cluster.GetSingleCloudResource(ResourceType_VPC)
+	if vpcCloudResource == nil {
+		return errors.New("vpc not found")
+	}
 	if cluster.BostionHost.Status == NodeStatus_NODE_DELETING {
 		if cluster.BostionHost.InstanceId == "" {
 			return nil
 		}
 		_, err := a.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+			DryRun:      aws.Bool(a.dryRun),
 			InstanceIds: []string{cluster.BostionHost.InstanceId},
 		})
-		if err != nil {
+		if err := a.handlerError(err); err != nil {
 			return errors.Wrap(err, "failed to terminate instances")
+		}
+		if a.dryRun {
+			return nil
 		}
 		waiter := ec2.NewInstanceTerminatedWaiter(a.ec2Client)
 		err = waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{cluster.BostionHost.InstanceId}}, time.Duration(1)*TimeoutPerInstance)
-		if err != nil {
+		if err := a.handlerError(err); err != nil {
 			return fmt.Errorf("failed to wait for instance termination: %w", err)
 		}
 		cluster.BostionHost.Status = NodeStatus_NODE_DELETED
@@ -757,13 +885,12 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	if len(publicSubnet) == 0 {
 		return errors.New("public subnet not found in the ManageBostionHost")
 	}
-	sgs := cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, AwsTagKeyType, AwsReousrceBostionHostSG)
-	if len(sgs) == 0 {
-		return errors.New("security group not found in the ManageBostionHost")
-	}
 	sgIds := make([]string, 0)
-	for _, v := range sgs {
+	for _, v := range cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, AwsTagKeyType, AwsReousrceBostionHostSG) {
 		sgIds = append(sgIds, v.RefId)
+	}
+	if len(sgIds) == 0 {
+		return errors.New("security group not found in the ManageBostionHost")
 	}
 
 	keyPair := cluster.GetSingleCloudResource(ResourceType_KEY_PAIR)
@@ -771,10 +898,9 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 		return errors.New("key pair not found in the ManageBostionHost")
 	}
 
-	bostionHostTag := map[string]string{
-		AwsTagKeyName: fmt.Sprintf("%s-%s", cluster.Name, "bostion"),
-	}
+	bostionHostTag := map[string]string{AwsTagKeyName: fmt.Sprintf("%s-%s", cluster.Name, "bostion")}
 	instanceOutput, err := a.ec2Client.RunInstances(ctx, &ec2.RunInstancesInput{
+		DryRun:       aws.Bool(a.dryRun),
 		ImageId:      image.ImageId,
 		InstanceType: ec2Types.InstanceType(instanceType.InstanceType),
 		MaxCount:     aws.Int32(1),
@@ -807,8 +933,11 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 			},
 		},
 	})
-	if err != nil {
+	if err := a.handlerError(err); err != nil {
 		return errors.Wrap(err, "failed to run instances in the ManageBostionHost")
+	}
+	if a.dryRun {
+		return nil
 	}
 
 	instanceIds := make([]string, 0)
@@ -819,10 +948,10 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	err = waiter.Wait(ctx, &ec2.DescribeInstancesInput{
 		InstanceIds: instanceIds,
 	}, time.Duration(1)*TimeoutPerInstance)
-	if err != nil {
+	if err := a.handlerError(err); err != nil {
 		return fmt.Errorf("failed to wait for instance running: %w", err)
 	}
-	instances, err := a.getInstances(ctx, cluster, instanceIds, []string{})
+	instances, err := a.getInstances(ctx, vpcCloudResource, instanceIds...)
 	if err != nil {
 		return err
 	}
@@ -1300,6 +1429,7 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 		}
 		nextToken = aws.ToString(natgatewayRes.NextToken)
 	}
+
 	for _, natgatewayResource := range cluster.GetCloudResource(ResourceType_NAT_GATEWAY) {
 		natgatewayResourceExits := false
 		for _, natgateway := range natgateways {
@@ -2140,6 +2270,87 @@ func (a *AwsCloudUsecase) CreateSLB(ctx context.Context, cluster *Cluster) error
 	return nil
 }
 
+// create eks cluster role
+func (a *AwsCloudUsecase) createEKSClusterRole(ctx context.Context, cluster *Cluster) (string, error) {
+	// Role name with cluster name to make it unique
+	roleName := fmt.Sprintf("%s-eks-cluster-role", cluster.Name)
+	roleOutput, err := a.iamClient.GetRole(ctx, &iam.GetRoleInput{
+		RoleName: aws.String(roleName),
+	})
+	if err != nil {
+		var noSuchEntity *iamTypes.NoSuchEntityException
+		if !errors.As(err, &noSuchEntity) {
+			return "", errors.Wrap(err, "failed to get EKS cluster role")
+		}
+	}
+	if roleOutput != nil {
+		return aws.ToString(roleOutput.Role.Arn), nil
+	}
+
+	// Define the trust relationship policy for EKS service
+	trustPolicy := `{
+		"Version": "2012-10-17",
+		"Statement": [
+			{
+				"Effect": "Allow",
+				"Principal": {
+					"Service": "eks.amazonaws.com"
+				},
+				"Action": "sts:AssumeRole"
+			}
+		]
+	}`
+
+	// Create the IAM role
+	createRoleInput := &iam.CreateRoleInput{
+		RoleName:                 aws.String(roleName),
+		AssumeRolePolicyDocument: aws.String(trustPolicy),
+		Description:              aws.String("Role for EKS cluster management"),
+		Tags: []iamTypes.Tag{
+			{
+				Key:   aws.String("Name"),
+				Value: aws.String(roleName),
+			},
+			{
+				Key:   aws.String("Cluster"),
+				Value: aws.String(cluster.Name),
+			},
+		},
+	}
+
+	_, err = a.iamClient.CreateRole(ctx, createRoleInput)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to create EKS cluster role")
+	}
+
+	// Attach required policies
+	policies := []string{
+		"arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+		"arn:aws:iam::aws:policy/AmazonEKSVPCResourceController",
+	}
+
+	for _, policyArn := range policies {
+		attachPolicyInput := &iam.AttachRolePolicyInput{
+			RoleName:  aws.String(roleName),
+			PolicyArn: aws.String(policyArn),
+		}
+
+		_, err = a.iamClient.AttachRolePolicy(ctx, attachPolicyInput)
+		if err != nil {
+			return "", errors.Wrap(err, "failed to attach policy to EKS cluster role")
+		}
+	}
+
+	// Store the role ARN in cluster for later use
+	roleOutput, err = a.iamClient.GetRole(ctx, &iam.GetRoleInput{
+		RoleName: aws.String(roleName),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get role ARN: %w", err)
+	}
+	return aws.ToString(roleOutput.Role.Arn), nil
+}
+
 // find image
 func (a *AwsCloudUsecase) findImage(ctx context.Context) (ec2Types.Image, error) {
 	image := ec2Types.Image{}
@@ -2214,9 +2425,7 @@ func (a *AwsCloudUsecase) findInstanceType(ctx context.Context, instanceTypeFami
 		if err != nil {
 			return instanceTypeInfo, errors.Wrap(err, "failed to describe instance types")
 		}
-		for _, instanceType := range instanceTypes.InstanceTypes {
-			instanceData = append(instanceData, instanceType)
-		}
+		instanceData = append(instanceData, instanceTypes.InstanceTypes...)
 		if instanceTypes.NextToken == nil {
 			break
 		}
@@ -2249,32 +2458,20 @@ func (a *AwsCloudUsecase) findInstanceType(ctx context.Context, instanceTypeFami
 	return instanceTypeInfo, nil
 }
 
-func (a *AwsCloudUsecase) getInstances(ctx context.Context, cluster *Cluster, instanceIDs, tagNames []string) ([]ec2Types.Instance, error) {
-	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
-	if vpc == nil {
-		return nil, errors.New("failed to get vpc")
-	}
+func (a *AwsCloudUsecase) getInstances(ctx context.Context, vpcCloudResource *CloudResource, instanceIds ...string) ([]ec2Types.Instance, error) {
 	filters := []ec2Types.Filter{
-		{
-			Name:   aws.String("vpc-id"),
-			Values: []string{vpc.RefId},
-		},
-		{
-			Name:   aws.String("instance-state-name"),
-			Values: []string{string(ec2Types.InstanceStateNameRunning)},
-		},
+		{Name: aws.String("vpc-id"), Values: []string{vpcCloudResource.RefId}},
+		{Name: aws.String("instance-state-name"), Values: []string{
+			string(ec2Types.InstanceStateNamePending),
+			string(ec2Types.InstanceStateNameRunning),
+			string(ec2Types.InstanceStateNameShuttingDown),
+			string(ec2Types.InstanceStateNameStopping),
+			string(ec2Types.InstanceStateNameStopped),
+		}},
 	}
-	if len(tagNames) > 0 {
-		filters = append(filters, ec2Types.Filter{
-			Name:   aws.String("tag:Name"),
-			Values: tagNames,
-		})
-	}
-	input := &ec2.DescribeInstancesInput{
-		Filters: filters,
-	}
-	if len(instanceIDs) > 0 {
-		input.InstanceIds = instanceIDs
+	input := &ec2.DescribeInstancesInput{Filters: filters}
+	if len(instanceIds) > 0 {
+		input.InstanceIds = instanceIds
 	}
 	var instances []ec2Types.Instance
 	for {
@@ -2292,7 +2489,6 @@ func (a *AwsCloudUsecase) getInstances(ctx context.Context, cluster *Cluster, in
 		}
 		input.NextToken = output.NextToken
 	}
-
 	return instances, nil
 }
 

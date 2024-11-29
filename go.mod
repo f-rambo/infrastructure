@@ -15,6 +15,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.192.0
 	github.com/aws/aws-sdk-go-v2/service/eks v1.52.1
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.42.0
+	github.com/aws/aws-sdk-go-v2/service/iam v1.38.1
+	github.com/aws/aws-sdk-go-v2/service/servicequotas v1.25.6
 	github.com/aws/smithy-go v1.22.1
 	github.com/fsnotify/fsnotify v1.6.0
 	github.com/go-kratos/kratos/v2 v2.8.0

@@ -211,7 +211,7 @@ func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 	for _, nodeGroup := range cluster.NodeGroups {
 		workerNodes = append(workerNodes, &cs20151215.CreateClusterRequestWorkerDataDisks{
 			Category: tea.String("cloud_essd"),
-			Size:     tea.String(string(nodeGroup.DataDisk)),
+			Size:     tea.String(string(nodeGroup.DataDiskSize)),
 		})
 
 	}
