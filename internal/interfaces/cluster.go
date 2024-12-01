@@ -71,7 +71,6 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 	if cluster.Type == biz.ClusterType_AWS_EC2 {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
-			c.awsUc.GetAvailabilityZones,
 			c.awsUc.CreateNetwork,
 			c.awsUc.SetByNodeGroups,
 			c.awsUc.ImportKeyPair,
@@ -82,7 +81,6 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 	if cluster.Type == biz.ClusterType_ALICLOUD_ECS {
 		c.aliUc.Connections(cluster)
 		funcs = []func(context.Context, *biz.Cluster) error{
-			c.aliUc.GetAvailabilityZones,
 			c.aliUc.CreateNetwork,
 			c.aliUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
@@ -93,7 +91,6 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 	if cluster.Type == biz.ClusterType_AWS_EKS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
-			c.awsUc.GetAvailabilityZones,
 			c.awsUc.CreateNetwork,
 			c.awsUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
@@ -103,7 +100,6 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 	if cluster.Type == biz.ClusterType_ALICLOUD_AKS {
 		c.aliUc.Connections(cluster)
 		funcs = []func(context.Context, *biz.Cluster) error{
-			c.aliUc.GetAvailabilityZones,
 			c.aliUc.CreateNetwork,
 			c.aliUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
@@ -113,7 +109,6 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 	if cluster.Type == biz.ClusterType_GCP_GKE {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.gcpUc.Connections,
-			c.gcpUc.GetAvailabilityZones,
 			c.gcpUc.CreateNetwork,
 			c.gcpUc.SetByNodeGroups,
 			c.gcpUc.ImportKeyPair,

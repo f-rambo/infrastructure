@@ -1009,11 +1009,9 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 		}
 		vpcTags, differ := a.checkTags(vpcTags, vpc.Tags)
 		if differ {
-			err := a.createTags(ctx, aws.ToString(vpc.VpcId), ResourceType_VPC, vpcTags)
-			if err != nil {
-				return err
-			}
+			a.createTags(ctx, aws.ToString(vpc.VpcId), ResourceType_VPC, vpcTags)
 		}
+		cluster.IpCidr = aws.ToString(vpc.CidrBlock)
 		cluster.AddCloudResource(&CloudResource{
 			RefId: aws.ToString(vpc.VpcId),
 			Name:  vpcName,
@@ -1135,10 +1133,7 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			tags[AwsTagKeyName] = name
 			tags[AwsTagKeyZone] = zoneName
 			if tags, differ := a.checkTags(tags, subnet.Tags); differ {
-				err := a.createTags(ctx, aws.ToString(subnet.SubnetId), ResourceType_SUBNET, tags)
-				if err != nil {
-					return err
-				}
+				a.createTags(ctx, aws.ToString(subnet.SubnetId), ResourceType_SUBNET, tags)
 			}
 			cluster.AddCloudResource(&CloudResource{
 				Name:  name,
@@ -1342,10 +1337,7 @@ func (a *AwsCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cl
 		}
 		tags[AwsTagKeyName] = name
 		if tags, differ := a.checkTags(tags, igw.Tags); differ {
-			err := a.createTags(ctx, aws.ToString(igw.InternetGatewayId), ResourceType_INTERNET_GATEWAY, tags)
-			if err != nil {
-				return err
-			}
+			a.createTags(ctx, aws.ToString(igw.InternetGatewayId), ResourceType_INTERNET_GATEWAY, tags)
 		}
 		cluster.AddCloudResource(&CloudResource{
 			Name:         name,
@@ -1468,10 +1460,7 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 		tags[AwsTagKeyZone] = subnetCloudResourceMapTags[AwsTagKeyZone]
 		tags[AwsTagKeyName] = name
 		if tags, differ := a.checkTags(tags, natGateway.Tags); differ {
-			err := a.createTags(ctx, aws.ToString(natGateway.NatGatewayId), ResourceType_NAT_GATEWAY, tags)
-			if err != nil {
-				return err
-			}
+			a.createTags(ctx, aws.ToString(natGateway.NatGatewayId), ResourceType_NAT_GATEWAY, tags)
 		}
 		cluster.AddCloudResource(&CloudResource{
 			Name:         name,
@@ -1534,10 +1523,7 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			}
 			tags[AwsTagKeyZone] = eipNoExitsZoneName
 			tags[AwsTagKeyName] = a.getEipName(cluster.Name, eipNoExitsZoneName)
-			err = a.createTags(ctx, aws.ToString(eip.AllocationId), ResourceType_ELASTIC_IP, tags)
-			if err != nil {
-				return err
-			}
+			a.createTags(ctx, aws.ToString(eip.AllocationId), ResourceType_ELASTIC_IP, tags)
 		}
 		cluster.AddCloudResource(&CloudResource{
 			RefId: aws.ToString(eip.AllocationId),

@@ -7,24 +7,83 @@ import (
 	"net"
 )
 
-// generateSubnets 生成指定数量的子网CIDR块
+func GenerateSubnet(vpcCIDR string, exitsSubnets []string) (string, error) {
+	_, vpcNet, err := net.ParseCIDR(vpcCIDR)
+	if err != nil {
+		return "", fmt.Errorf("invalid VPC CIDR: %v", err)
+	}
+
+	// Get VPC mask size
+	vpcMaskSize, _ := vpcNet.Mask.Size()
+
+	// We'll use /24 as the subnet mask size (common for most use cases)
+	newMaskSize := 24
+	if vpcMaskSize > newMaskSize {
+		return "", fmt.Errorf("VPC CIDR is smaller than target subnet size")
+	}
+
+	additionalBits := newMaskSize - vpcMaskSize
+	maxSubnets := 1 << uint(additionalBits)
+
+	// Try each possible subnet position
+	for i := 0; i < maxSubnets; i++ {
+		subnet, err := subnet(vpcNet, additionalBits, i)
+		if err != nil {
+			continue
+		}
+
+		// Check if this subnet overlaps with any existing subnets
+		hasOverlap := false
+		for _, existingSubnet := range exitsSubnets {
+			overlap, err := IsSubnetOverlap(subnet.String(), existingSubnet)
+			if err != nil || overlap {
+				hasOverlap = true
+				break
+			}
+		}
+
+		if !hasOverlap {
+			return subnet.String(), nil
+		}
+	}
+
+	return "", fmt.Errorf("no available subnet found in VPC CIDR range")
+}
+
+func IsSubnetOverlap(cidr1, cidr2 string) (bool, error) {
+	_, network1, err := net.ParseCIDR(cidr1)
+	if err != nil {
+		return false, err
+	}
+
+	_, network2, err := net.ParseCIDR(cidr2)
+	if err != nil {
+		return false, err
+	}
+
+	if network1.Contains(network2.IP) || network2.Contains(network1.IP) {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func GenerateSubnets(vpcCIDR string, subnetCount int) ([]string, error) {
 	_, vpcNet, err := net.ParseCIDR(vpcCIDR)
 	if err != nil {
-		return nil, fmt.Errorf("invalid VPC CIDR: %v", err)
+		return nil, err
 	}
 
-	// 计算每个子网的前缀长度
 	subnetMaskSize, totalMaskSize := vpcNet.Mask.Size()
 	requiredBits := int(math.Ceil(math.Log2(float64(subnetCount))))
 	newPrefix := subnetMaskSize + requiredBits
 
-	// 检查子网是否能容纳指定数量的子网
+	fmt.Println(totalMaskSize, newPrefix)
+
 	if newPrefix > totalMaskSize {
 		return nil, fmt.Errorf("subnet count too large for the given VPC CIDR. Maximum subnets that can be generated: %d", 1<<(totalMaskSize-subnetMaskSize))
 	}
 
-	// 使用go-cidr库生成子网
 	subnets := []string{}
 	for i := 0; i < subnetCount; i++ {
 		subnet, err := subnet(vpcNet, requiredBits, i)

@@ -7,7 +7,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	cs20151215 "github.com/alibabacloud-go/cs-20151215/v5/client"
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
@@ -17,7 +16,6 @@ import (
 	vpc20160428 "github.com/alibabacloud-go/vpc-20160428/v6/client"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 )
 
@@ -48,7 +46,6 @@ type AliCloudUsecase struct {
 	ecsClient *ecs20140526.Client
 	slbClient *slb20140515.Client
 	csClient  *cs20151215.Client
-	dryRun    bool
 }
 
 func NewAliCloudUseCase(logger log.Logger) *AliCloudUsecase {
@@ -56,10 +53,6 @@ func NewAliCloudUseCase(logger log.Logger) *AliCloudUsecase {
 		log: log.NewHelper(logger),
 	}
 	return c
-}
-
-func (a *AliCloudUsecase) SetDryRun(dryRun bool) {
-	a.dryRun = dryRun
 }
 
 func (a *AliCloudUsecase) Connections(cluster *Cluster) {
@@ -87,6 +80,9 @@ func (a *AliCloudUsecase) createVpcClient() (err error) {
 }
 
 func (a *AliCloudUsecase) createEcsClient() (err error) {
+	if a.ecsClient != nil {
+		return nil
+	}
 	config := &openapi.Config{
 		AccessKeyId:     tea.String(os.Getenv(ALICLOUD_ACCESS_KEY)),
 		AccessKeySecret: tea.String(os.Getenv(ALICLOUD_SECRET_KEY)),
@@ -101,6 +97,9 @@ func (a *AliCloudUsecase) createEcsClient() (err error) {
 }
 
 func (a *AliCloudUsecase) createSlbClient() (err error) {
+	if a.slbClient != nil {
+		return nil
+	}
 	config := &openapi.Config{
 		AccessKeyId:     tea.String(os.Getenv(ALICLOUD_ACCESS_KEY)),
 		AccessKeySecret: tea.String(os.Getenv(ALICLOUD_SECRET_KEY)),
@@ -115,6 +114,9 @@ func (a *AliCloudUsecase) createSlbClient() (err error) {
 }
 
 func (a *AliCloudUsecase) createCsClient() (err error) {
+	if a.csClient != nil {
+		return nil
+	}
 	config := &openapi.Config{
 		AccessKeyId:     tea.String(os.Getenv(ALICLOUD_ACCESS_KEY)),
 		AccessKeySecret: tea.String(os.Getenv(ALICLOUD_SECRET_KEY)),
@@ -134,8 +136,10 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 		return err
 	}
 	zonesRes, err := a.ecsClient.DescribeZones(&ecs20140526.DescribeZonesRequest{
-		AcceptLanguage: tea.String("zh-CN"),
-		RegionId:       tea.String(os.Getenv(ALICLOUD_REGION)),
+		AcceptLanguage:     tea.String("zh-CN"),
+		RegionId:           tea.String(os.Getenv(ALICLOUD_REGION)),
+		InstanceChargeType: tea.String("PostPaid"),
+		SpotStrategy:       tea.String("NoSpot"),
 	})
 	if err != nil {
 		return errors.Wrap(err, "failed to describe zones")
@@ -144,6 +148,25 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 		return errors.New("no availability zones found")
 	}
 	for _, zone := range zonesRes.Body.Zones.Zone {
+		if tea.StringValue(zone.ZoneType) != "AvailabilityZone" {
+			continue
+		}
+		zoneResourceType := tea.StringSliceValue(zone.AvailableResourceCreation.ResourceTypes)
+		if !utils.InArray("VSwitch", zoneResourceType) {
+			continue
+		}
+		if !utils.InArray("IoOptimized", zoneResourceType) {
+			continue
+		}
+		if !utils.InArray("Instance", zoneResourceType) {
+			continue
+		}
+		if !utils.InArray("Disk", zoneResourceType) {
+			continue
+		}
+		if !utils.InArray("DedicatedHost", zoneResourceType) {
+			continue
+		}
 		cluster.AddCloudResource(&CloudResource{
 			RefId: tea.StringValue(zone.ZoneId),
 			Name:  tea.StringValue(zone.LocalName),
@@ -151,7 +174,7 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 			Value: os.Getenv(ALICLOUD_REGION),
 		})
 	}
-	return err
+	return nil
 }
 
 func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *Cluster) error {
@@ -170,7 +193,7 @@ func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 	// Get worker node VSwitches
 	workerVSwitches := make([]string, 0)
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		vsw := cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_ZONE, az.Name)
+		vsw := cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_ZONE, az.RefId)
 		if len(vsw) > 0 {
 			workerVSwitches = append(workerVSwitches, vsw[0].RefId)
 		}
@@ -273,10 +296,10 @@ func (a *AliCloudUsecase) CreateNetwork(ctx context.Context, cluster *Cluster) e
 		a.createVPC,
 		a.createSubnets,
 		a.createInternetGateway,
+		a.createEips,
 		a.createNatGateways,
 		a.createRouteTables,
 		a.createSecurityGroup,
-		a.createSLB,
 	}
 	for _, f := range fs {
 		if err := f(ctx, cluster); err != nil {
@@ -458,9 +481,9 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 		// Get VSwitches for the node group's availability zones
 		vSwitches := make([]*CloudResource, 0)
 		for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-			vsw := cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_ZONE, az.Name)
+			vsw := cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_ZONE, az.RefId)
 			if len(vsw) == 0 {
-				return fmt.Errorf("vswitch not found for availability zone %s", az.Name)
+				return fmt.Errorf("vswitch not found for availability zone %s", az.RefId)
 			}
 			vSwitches = append(vSwitches, vsw...)
 		}
@@ -548,12 +571,6 @@ func (a *AliCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 		return err
 	}
 
-	// Skip if basic cluster
-	if cluster.Level == ClusterLevel_BASIC {
-		a.log.Info("skip create bastion host for basic cluster")
-		return nil
-	}
-
 	// Get VPC and security groups
 	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
 	if vpc == nil {
@@ -575,7 +592,7 @@ func (a *AliCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	// Get public VSwitch
 	var publicVSwitch *CloudResource
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		vsw := cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_ZONE, az.Name)
+		vsw := cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_ZONE, az.RefId)
 		if len(vsw) > 0 {
 			publicVSwitch = vsw[0]
 			break
@@ -749,48 +766,75 @@ func (a *AliCloudUsecase) DeleteNetwork(ctx context.Context, cluster *Cluster) e
 }
 
 func (a *AliCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error {
-	if cluster.GetSingleCloudResource(ResourceType_VPC) != nil {
-		a.log.Info("vpc already exists ", "vpc ", cluster.GetSingleCloudResource(ResourceType_VPC).Name)
-		return nil
-	}
-	vpcName := cluster.Name + "-vpc"
-	existingVpcs, err := a.vpcClient.DescribeVpcs(&vpc20160428.DescribeVpcsRequest{
-		VpcName: tea.String(vpcName),
-	})
-	if err != nil || tea.Int32Value(existingVpcs.StatusCode) != http.StatusOK {
-		return errors.Wrap(err, "failed to describe VPCs")
-	}
-	if tea.Int32Value(existingVpcs.Body.TotalCount) != 0 {
-		for _, vpc := range existingVpcs.Body.Vpcs.Vpc {
-			cluster.AddCloudResource(&CloudResource{
-				RefId: tea.StringValue(vpc.VpcId),
-				Name:  tea.StringValue(vpc.VpcName),
-				Type:  ResourceType_VPC,
-			})
-			a.log.Infof("vpc %s already exists", cluster.GetSingleCloudResource(ResourceType_VPC).RefId)
+	vpcs := make([]*vpc20160428.DescribeVpcsResponseBodyVpcsVpc, 0)
+	pageNumber := 1
+	for {
+		vpcsRes, err := a.vpcClient.DescribeVpcs(&vpc20160428.DescribeVpcsRequest{
+			RegionId:   tea.String(cluster.Region),
+			PageNumber: tea.Int32(int32(pageNumber)),
+			PageSize:   tea.Int32(50),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to describe VPCs")
+		}
+		vpcs = append(vpcs, vpcsRes.Body.Vpcs.Vpc...)
+		if len(vpcsRes.Body.Vpcs.Vpc) < 50 {
 			break
 		}
+		pageNumber++
+	}
+	for _, vpc := range vpcs {
+		if v := cluster.GetCloudResourceByRefID(ResourceType_VPC, tea.StringValue(vpc.VpcId)); v != nil {
+			a.log.Info("vpc already exists ", "vpc ", v.Name)
+			return nil
+		}
+	}
+	if len(cluster.GetCloudResource(ResourceType_VPC)) > 0 {
+		cluster.DeleteCloudResource(ResourceType_VPC)
+	}
+
+	vpcName := cluster.Name + "-vpc"
+	vpcTags := map[string]string{ALICLOUD_TAG_KEY_NAME: vpcName}
+	for _, vpc := range vpcs {
+		if len(cluster.GetCloudResource(ResourceType_VPC)) > 0 {
+			return nil
+		}
+		if tea.StringValue(vpc.VpcName) != vpcName {
+			_, err := a.vpcClient.ModifyVpcAttribute(&vpc20160428.ModifyVpcAttributeRequest{
+				VpcId:    vpc.VpcId,
+				RegionId: tea.String(cluster.Region),
+				VpcName:  tea.String(vpcName),
+			})
+			if err != nil {
+				return errors.Wrap(err, "failed to modify VPC name")
+			}
+		}
+		a.createVpcTags(cluster.Region, tea.StringValue(vpc.VpcId), "VPC", vpcTags)
+		cluster.IpCidr = tea.StringValue(vpc.CidrBlock)
+		cluster.AddCloudResource(&CloudResource{
+			RefId: tea.StringValue(vpc.VpcId),
+			Name:  vpcName,
+			Type:  ResourceType_VPC,
+			Tags:  cluster.EncodeTags(vpcTags),
+		})
+		a.log.Infof("vpc %s already exists", vpcName)
+	}
+	if len(cluster.GetCloudResource(ResourceType_VPC)) > 0 {
 		return nil
 	}
 	vpcResponce, err := a.vpcClient.CreateVpc(&vpc20160428.CreateVpcRequest{
 		VpcName:   tea.String(cluster.Name + "-vpc"),
 		RegionId:  tea.String(cluster.Region),
 		CidrBlock: tea.String(cluster.IpCidr),
-		DryRun:    tea.Bool(a.dryRun),
 	})
 	if err := a.handlerError(err); err != nil {
 		return err
 	}
-	vpcCloudResource := &CloudResource{
-		Name: vpcName,
-		Type: ResourceType_VPC,
-	}
-	if a.dryRun {
-		vpcCloudResource.RefId = uuid.New().String()
-	} else {
-		vpcCloudResource.RefId = tea.StringValue(vpcResponce.Body.VpcId)
-	}
-	cluster.AddCloudResource(vpcCloudResource)
+	cluster.AddCloudResource(&CloudResource{
+		RefId: tea.StringValue(vpcResponce.Body.VpcId),
+		Name:  vpcName,
+		Type:  ResourceType_VPC,
+	})
 	a.log.Infof("vpc %s created", vpcName)
 	return nil
 }
@@ -800,7 +844,7 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 	if vpc == nil {
 		return errors.New("vpc not found")
 	}
-	existingSubnets := make([]*vpc20160428.DescribeVSwitchesResponseBodyVSwitchesVSwitch, 0)
+	subnets := make([]*vpc20160428.DescribeVSwitchesResponseBodyVSwitchesVSwitch, 0)
 	pageNumber := 1
 	for {
 		existingSubnetRes, err := a.vpcClient.DescribeVSwitches(&vpc20160428.DescribeVSwitchesRequest{
@@ -811,28 +855,44 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		if err != nil || tea.Int32Value(existingSubnetRes.StatusCode) != http.StatusOK {
 			return err
 		}
-		existingSubnets = append(existingSubnets, existingSubnetRes.Body.VSwitches.VSwitch...)
-		if tea.Int32Value(existingSubnetRes.Body.TotalCount) == 0 || len(existingSubnetRes.Body.VSwitches.VSwitch) < 50 {
+		subnets = append(subnets, existingSubnetRes.Body.VSwitches.VSwitch...)
+		if len(existingSubnetRes.Body.VSwitches.VSwitch) < 50 {
 			break
 		}
 		pageNumber++
 	}
 
-	zoneSubnets := make(map[string][]*vpc20160428.DescribeVSwitchesResponseBodyVSwitchesVSwitch)
-	subbetTotalCount := len(existingSubnets)
-	if subbetTotalCount != 0 {
-		for _, subnet := range existingSubnets {
-			if subnet.ZoneId == nil {
-				continue
+	// clear history subnet
+	for _, subnetCloudResource := range cluster.GetCloudResource(ResourceType_SUBNET) {
+		subnetCloudResourceExits := false
+		for _, subnet := range subnets {
+			if subnetCloudResource.RefId == tea.StringValue(subnet.VSwitchId) {
+				subnetCloudResourceExits = true
+				break
 			}
-			_, ok := zoneSubnets[tea.StringValue(subnet.ZoneId)]
-			if ok && len(zoneSubnets[tea.StringValue(subnet.ZoneId)]) >= 3 {
-				continue
-			}
-			zoneSubnets[tea.StringValue(subnet.ZoneId)] = append(zoneSubnets[tea.StringValue(subnet.ZoneId)], subnet)
+		}
+		if !subnetCloudResourceExits {
+			cluster.DeleteCloudResourceByRefID(ResourceType_SUBNET, subnetCloudResource.RefId)
 		}
 	}
-	for zoneName, subzoneSubnets := range zoneSubnets {
+
+	subnetExitsCidrs := make([]string, 0)
+	zoneSubnets := make(map[string][]*vpc20160428.DescribeVSwitchesResponseBodyVSwitchesVSwitch)
+	for _, subnet := range subnets {
+		if subnet.CidrBlock == nil {
+			continue
+		}
+		subnetExitsCidrs = append(subnetExitsCidrs, tea.StringValue(subnet.CidrBlock))
+		if subnet.ZoneId == nil {
+			continue
+		}
+		_, ok := zoneSubnets[tea.StringValue(subnet.ZoneId)]
+		if ok && len(zoneSubnets[tea.StringValue(subnet.ZoneId)]) >= 3 {
+			continue
+		}
+		zoneSubnets[tea.StringValue(subnet.ZoneId)] = append(zoneSubnets[tea.StringValue(subnet.ZoneId)], subnet)
+	}
+	for zoneId, subzoneSubnets := range zoneSubnets {
 		for i, subnet := range subzoneSubnets {
 			if subnet.VSwitchId == nil {
 				continue
@@ -843,22 +903,32 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			}
 			tags := make(map[string]string)
 			name := ""
-			for _, tag := range subnet.Tags.Tag {
-				tags[tea.StringValue(tag.Key)] = tea.StringValue(tag.Value)
+			if subnet.Tags != nil {
+				for _, tag := range subnet.Tags.Tag {
+					tags[tea.StringValue(tag.Key)] = tea.StringValue(tag.Value)
+				}
 			}
-			tags[ALICLOUD_TAG_KEY_ZONE] = zoneName
+			tags[ALICLOUD_TAG_KEY_ZONE] = zoneId
 			if i < 2 {
-				name = fmt.Sprintf("%s-private-subnet-%s-%d", cluster.Name, zoneName, i+1)
+				name = fmt.Sprintf("%s-private-subnet-%s-%d", cluster.Name, zoneId, i+1)
 				tags[ALICLOUD_TAG_KEY_TYPE] = AlicloudResourcePrivate
 			} else {
-				name = fmt.Sprintf("%s-public-subnet-%s", cluster.Name, zoneName)
+				name = fmt.Sprintf("%s-public-subnet-%s", cluster.Name, zoneId)
 				tags[ALICLOUD_TAG_KEY_TYPE] = AlicloudResourcePublic
 			}
 			tags[ALICLOUD_TAG_KEY_NAME] = name
-			err := a.createVpcTags(cluster.Region, tea.StringValue(subnet.VSwitchId), "VSWITCH", tags)
-			if err != nil {
-				return err
+			if tea.StringValue(subnet.VSwitchName) != name {
+				_, err := a.vpcClient.ModifyVSwitchAttribute(&vpc20160428.ModifyVSwitchAttributeRequest{
+					RegionId:    tea.String(cluster.Region),
+					VSwitchId:   subnet.VSwitchId,
+					VSwitchName: tea.String(name),
+					Description: tea.String(fmt.Sprintf("It's from %s", cluster.Name)),
+				})
+				if err != nil {
+					return errors.Wrap(err, "failed to modify vswitch attribute")
+				}
 			}
+			a.createVpcTags(cluster.Region, tea.StringValue(subnet.VSwitchId), "VSWITCH", tags)
 			cluster.AddCloudResource(&CloudResource{
 				Name:  name,
 				RefId: tea.StringValue(subnet.VSwitchId),
@@ -870,52 +940,23 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 	}
 
 	// get subnet cidr
-	privateSubnetCount := len(cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES)) * 2
-	publicSubnetCount := len(cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES))
-	subnetCidrRes, err := utils.GenerateSubnets(cluster.IpCidr, privateSubnetCount+publicSubnetCount+int(subbetTotalCount))
-	if err != nil {
-		return errors.Wrap(err, "failed to generate subnet CIDRs")
-	}
-	subnetCidrs := make([]string, 0)
-	existingSubnetCird := make(map[string]bool)
-	for _, subnet := range existingSubnets {
-		existingSubnetCird[tea.StringValue(subnet.CidrBlock)] = true
-	}
-	for _, subnetCidr := range subnetCidrRes {
-		subnetCidrDecode := utils.DecodeCidr(subnetCidr)
-		if subnetCidrDecode == "" {
-			continue
-		}
-		ok := true
-		for _, subnet := range existingSubnets {
-			existingSubnetCirdDecode := utils.DecodeCidr(tea.StringValue(subnet.CidrBlock))
-			if existingSubnetCirdDecode == "" {
-				continue
-			}
-			if subnetCidrDecode == existingSubnetCirdDecode {
-				ok = false
-				break
-			}
-		}
-		if !ok {
-			continue
-		}
-		subnetCidrs = append(subnetCidrs, subnetCidr)
-	}
-
-	for i, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
+	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
 		// Create private subnets
 		for j := 0; j < 2; j++ {
-			name := fmt.Sprintf("%s-private-subnet-%s-%d", cluster.Name, az.Name, j+1)
+			name := fmt.Sprintf("%s-private-subnet-%s-%d", cluster.Name, az.RefId, j+1)
 			tags := map[string]string{
 				ALICLOUD_TAG_KEY_NAME: name,
 				ALICLOUD_TAG_KEY_TYPE: AlicloudResourcePrivate,
-				ALICLOUD_TAG_KEY_ZONE: az.Name,
+				ALICLOUD_TAG_KEY_ZONE: az.RefId,
 			}
 			if cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_NAME, name) != nil {
 				continue
 			}
-			cidr := subnetCidrs[i*2+j]
+			cidr, err := utils.GenerateSubnet(cluster.IpCidr, subnetExitsCidrs)
+			if err != nil {
+				return err
+			}
+			subnetExitsCidrs = append(subnetExitsCidrs, cidr)
 			privateSubnetTags := make([]*vpc20160428.CreateVSwitchRequestTag, 0)
 			for k, v := range tags {
 				privateSubnetTags = append(privateSubnetTags, &vpc20160428.CreateVSwitchRequestTag{
@@ -924,10 +965,12 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 				})
 			}
 			subnetOutput, err := a.vpcClient.CreateVSwitch(&vpc20160428.CreateVSwitchRequest{
-				VpcId:     tea.String(vpc.RefId),
-				CidrBlock: tea.String(cidr),
-				ZoneId:    tea.String(az.RefId),
-				Tag:       privateSubnetTags,
+				VSwitchName: tea.String(name),
+				RegionId:    tea.String(cluster.Region),
+				VpcId:       tea.String(vpc.RefId),
+				CidrBlock:   tea.String(cidr),
+				ZoneId:      tea.String(az.RefId),
+				Tag:         privateSubnetTags,
 			})
 			if err != nil {
 				return errors.Wrap(err, "failed to create private subnet")
@@ -943,17 +986,21 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		}
 
 		// Create public subnet
-		name := fmt.Sprintf("%s-public-subnet-%s", cluster.Name, az.Name)
+		name := fmt.Sprintf("%s-public-subnet-%s", cluster.Name, az.RefId)
 		tags := map[string]string{
 			ALICLOUD_TAG_KEY_NAME: name,
 			ALICLOUD_TAG_KEY_TYPE: AlicloudResourcePublic,
-			ALICLOUD_TAG_KEY_ZONE: az.Name,
+			ALICLOUD_TAG_KEY_ZONE: az.RefId,
 		}
 		if cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_NAME, name) != nil {
 			continue
 		}
 		// Create public subnet
-		cidr := subnetCidrs[privateSubnetCount+i]
+		cidr, err := utils.GenerateSubnet(cluster.IpCidr, subnetExitsCidrs)
+		if err != nil {
+			return err
+		}
+		subnetExitsCidrs = append(subnetExitsCidrs, cidr)
 		publicSubnetTags := make([]*vpc20160428.CreateVSwitchRequestTag, 0)
 		for k, v := range tags {
 			publicSubnetTags = append(publicSubnetTags, &vpc20160428.CreateVSwitchRequestTag{
@@ -962,10 +1009,12 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			})
 		}
 		subnetOutput, err := a.vpcClient.CreateVSwitch(&vpc20160428.CreateVSwitchRequest{
-			VpcId:     tea.String(vpc.RefId),
-			CidrBlock: tea.String(cidr),
-			ZoneId:    tea.String(az.RefId),
-			Tag:       publicSubnetTags,
+			VSwitchName: tea.String(name),
+			RegionId:    tea.String(cluster.Region),
+			VpcId:       tea.String(vpc.RefId),
+			CidrBlock:   tea.String(cidr),
+			ZoneId:      tea.String(az.RefId),
+			Tag:         publicSubnetTags,
 		})
 		if err != nil {
 			return errors.Wrap(err, "failed to create public subnet")
@@ -975,6 +1024,7 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			RefId:        tea.StringValue(subnetOutput.Body.VSwitchId),
 			AssociatedId: vpc.RefId,
 			Tags:         cluster.EncodeTags(tags),
+			Type:         ResourceType_SUBNET,
 		})
 		a.log.Infof("public subnet %s created", name)
 	}
@@ -1007,15 +1057,26 @@ func (a *AliCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cl
 			a.log.Infof("internet gateway %s already exists", tea.StringValue(gateway.Ipv4GatewayId))
 			continue
 		}
-		name := ""
+		name := fmt.Sprintf("%s-igw", cluster.Name)
 		tags := make(map[string]string)
-		for _, tag := range gateway.Tags {
-			tags[tea.StringValue(tag.Key)] = tea.StringValue(tag.Value)
+		if gateway.Tags != nil {
+			for _, tag := range gateway.Tags {
+				tags[tea.StringValue(tag.Key)] = tea.StringValue(tag.Value)
+			}
 		}
-		if name == "" {
-			name = fmt.Sprintf("%s-igw", cluster.Name)
+		if nameVal, ok := tags[ALICLOUD_TAG_KEY_NAME]; !ok || nameVal != name {
+			_, err := a.vpcClient.UpdateIpv4GatewayAttribute(&vpc20160428.UpdateIpv4GatewayAttributeRequest{
+				RegionId:               tea.String(cluster.Region),
+				Ipv4GatewayId:          gateway.Ipv4GatewayId,
+				Ipv4GatewayName:        tea.String(name),
+				Ipv4GatewayDescription: tea.String(fmt.Sprintf("It's from %s", cluster.Name)),
+			})
+			if err != nil {
+				return errors.Wrap(err, "failed to update internet gateway attribute")
+			}
+			a.createVpcTags(cluster.Region, tea.StringValue(gateway.Ipv4GatewayId), "IPV4GATEWAY", tags)
+			tags[ALICLOUD_TAG_KEY_NAME] = name
 		}
-		tags[ALICLOUD_TAG_KEY_NAME] = name
 		cluster.AddCloudResource(&CloudResource{
 			Name:         name,
 			RefId:        tea.StringValue(gateway.Ipv4GatewayId),
@@ -1028,25 +1089,32 @@ func (a *AliCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cl
 	}
 	// Create Internet Gateway if it doesn't exist
 	name := fmt.Sprintf("%s-igw", cluster.Name)
-	tags := map[string]string{ALICLOUD_TAG_KEY_NAME: name}
 	gatewayRes, err := a.vpcClient.CreateIpv4Gateway(&vpc20160428.CreateIpv4GatewayRequest{
 		RegionId:        tea.String(cluster.Region),
 		VpcId:           tea.String(vpc.RefId),
 		Ipv4GatewayName: tea.String(name),
+		Ipv4GatewayDescription: tea.String(fmt.Sprintf(
+			"It's from %s",
+			cluster.Name,
+		)),
 		Tag: []*vpc20160428.CreateIpv4GatewayRequestTag{
-			{
-				Key:   tea.String(ALICLOUD_TAG_KEY_NAME),
-				Value: tea.String(name),
-			},
+			{Key: tea.String(ALICLOUD_TAG_KEY_NAME), Value: tea.String(name)},
 		},
 	})
 	if err != nil {
 		return errors.Wrap(err, "failed to create internet gateway")
 	}
+	_, err = a.vpcClient.EnableVpcIpv4Gateway(&vpc20160428.EnableVpcIpv4GatewayRequest{
+		Ipv4GatewayId: gatewayRes.Body.Ipv4GatewayId,
+		RegionId:      tea.String(cluster.Region),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to enable internet gateway")
+	}
 	cluster.AddCloudResource(&CloudResource{
 		Name:         name,
 		RefId:        tea.StringValue(gatewayRes.Body.Ipv4GatewayId),
-		Tags:         cluster.EncodeTags(tags),
+		Tags:         cluster.EncodeTags(map[string]string{ALICLOUD_TAG_KEY_NAME: name}),
 		AssociatedId: vpc.RefId,
 		Type:         ResourceType_INTERNET_GATEWAY,
 	})
@@ -1054,10 +1122,86 @@ func (a *AliCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cl
 	return nil
 }
 
-func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluster) error {
-	if cluster.Level == ClusterLevel_BASIC {
-		return nil
+func (a *AliCloudUsecase) createEips(_ context.Context, cluster *Cluster) error {
+	// one zone one eip for nat gateway
+	// Get Elastic IP
+	eips := make([]*vpc20160428.DescribeEipAddressesResponseBodyEipAddressesEipAddress, 0)
+	var pageNumber int32 = 1
+	for {
+		eipRes, err := a.vpcClient.DescribeEipAddresses(&vpc20160428.DescribeEipAddressesRequest{
+			RegionId:   tea.String(cluster.Region),
+			Status:     tea.String("Available"),
+			PageNumber: tea.Int32(pageNumber),
+			PageSize:   tea.Int32(50),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to describe eip addresses")
+		}
+		if eipRes.Body.EipAddresses == nil {
+			break
+		}
+		eips = append(eips, eipRes.Body.EipAddresses.EipAddress...)
+		if len(eipRes.Body.EipAddresses.EipAddress) < 50 {
+			break
+		}
+		pageNumber++
 	}
+	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
+		name := fmt.Sprintf("%s-%s-eip", cluster.Name, az.RefId)
+		tags := make(map[string]string)
+		tags[ALICLOUD_TAG_KEY_ZONE] = az.RefId
+		tags[ALICLOUD_TAG_KEY_NAME] = name
+		for _, eip := range eips {
+			if eip.InstanceId != nil {
+				continue
+			}
+			if cluster.GetCloudResourceByRefID(ResourceType_ELASTIC_IP, tea.StringValue(eip.AllocationId)) != nil {
+				a.log.Infof("eip %s already exists", tea.StringValue(eip.AllocationId))
+				continue
+			}
+			if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, ALICLOUD_TAG_KEY_ZONE, az.RefId) != nil {
+				break
+			}
+			cluster.AddCloudResource(&CloudResource{
+				Name:  name,
+				RefId: tea.StringValue(eip.AllocationId),
+				Type:  ResourceType_ELASTIC_IP,
+				Value: tea.StringValue(eip.IpAddress),
+				Tags:  cluster.EncodeTags(tags),
+			})
+			a.log.Infof("elastic ip %s already exists", tea.StringValue(eip.IpAddress))
+			break
+		}
+		if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, ALICLOUD_TAG_KEY_ZONE, az.RefId) != nil {
+			continue
+		}
+		// Allocate new EIP
+		eipRes, err := a.vpcClient.AllocateEipAddress(&vpc20160428.AllocateEipAddressRequest{
+			RegionId:           tea.String(cluster.Region),
+			Bandwidth:          tea.String("5"),
+			InternetChargeType: tea.String("PayByTraffic"),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to allocate eip address")
+		}
+		// Add tags to EIP
+		err = a.createVpcTags(cluster.Region, tea.StringValue(eipRes.Body.AllocationId), "EIP", tags)
+		if err != nil {
+			return errors.Wrap(err, "failed to tag eip")
+		}
+		cluster.AddCloudResource(&CloudResource{
+			Name:  name,
+			RefId: tea.StringValue(eipRes.Body.AllocationId),
+			Type:  ResourceType_ELASTIC_IP,
+			Value: tea.StringValue(eipRes.Body.EipAddress),
+			Tags:  cluster.EncodeTags(tags),
+		})
+		a.log.Infof("elastic ip %s allocated", tea.StringValue(eipRes.Body.EipAddress))
+	}
+	return nil
+}
+
+func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluster) error {
 	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
 	if vpc == nil {
 		return errors.New("vpc not found")
@@ -1088,7 +1232,7 @@ func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			continue
 		}
 		// check public subnet
-		if natGateway.NatGatewayPrivateInfo == nil {
+		if natGateway.NatGatewayPrivateInfo == nil || natGateway.NatGatewayPrivateInfo.VswitchId == nil {
 			continue
 		}
 		subnetCloudResource := cluster.GetCloudResourceByRefID(ResourceType_NAT_GATEWAY, tea.StringValue(natGateway.NatGatewayPrivateInfo.VswitchId))
@@ -1096,7 +1240,7 @@ func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			continue
 		}
 		subnetCloudResourceMapTags := cluster.DecodeTags(subnetCloudResource.Tags)
-		if val, ok := subnetCloudResourceMapTags[ALICLOUD_TAG_KEY_TYPE]; !ok || val != AlicloudResourcePublic {
+		if val, ok := subnetCloudResourceMapTags[ALICLOUD_TAG_KEY_TYPE]; !ok || val != AlicloudResourcePrivate {
 			continue
 		}
 		tags := make(map[string]string)
@@ -1116,128 +1260,41 @@ func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 		a.log.Infof("nat gateway %s already exists", tea.StringValue(natGateway.Name))
 	}
 
-	// Get Elastic IP
-	eipRes, err := a.vpcClient.DescribeEipAddresses(&vpc20160428.DescribeEipAddressesRequest{
-		RegionId:   tea.String(cluster.Region),
-		Status:     tea.String("Available"),
-		PageNumber: tea.Int32(1),
-		PageSize:   tea.Int32(50),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to describe eip addresses")
-	}
-	for i, eip := range eipRes.Body.EipAddresses.EipAddress {
-		if eip.InstanceId != nil {
-			continue
-		}
-		if cluster.GetCloudResourceByRefID(ResourceType_ELASTIC_IP, tea.StringValue(eip.AllocationId)) != nil {
-			a.log.Infof("eip %s already exists", tea.StringValue(eip.AllocationId))
-			continue
-		}
-		name := fmt.Sprintf("%s-%d-eip", cluster.Name, i)
-		tags := make(map[string]string)
-		for _, tag := range eip.Tags.Tag {
-			tags[tea.StringValue(tag.Key)] = tea.StringValue(tag.Value)
-		}
-		tags[ALICLOUD_TAG_KEY_NAME] = name
-		cluster.AddCloudResource(&CloudResource{
-			Name:  name,
-			RefId: tea.StringValue(eip.AllocationId),
-			Type:  ResourceType_ELASTIC_IP,
-			Value: tea.StringValue(eip.IpAddress),
-			Tags:  cluster.EncodeTags(tags),
-		})
-		a.log.Infof("elastic ip %s already exists", tea.StringValue(eip.IpAddress))
-	}
-
-	// Allocate Elastic IP and create NAT Gateways for each AZ
-	usedEipID := make([]string, 0)
+	// create NAT Gateways for each AZ
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		natGatewayName := fmt.Sprintf("%s-nat-gateway-%s", cluster.Name, az.Name)
-		if cluster.GetCloudResourceByName(ResourceType_NAT_GATEWAY, natGatewayName) != nil {
+		if cluster.GetCloudResourceByTags(ResourceType_NAT_GATEWAY, ALICLOUD_TAG_KEY_ZONE, az.RefId) != nil {
 			continue
 		}
-
-		// Create EIP if not exists
-		eipName := fmt.Sprintf("%s-eip-%s", cluster.Name, az.Name)
-		eipTags := map[string]string{ALICLOUD_TAG_KEY_NAME: eipName, ALICLOUD_TAG_KEY_ZONE: az.Name}
-		var eipResource *CloudResource
-		for _, eip := range cluster.GetCloudResource(ResourceType_ELASTIC_IP) {
-			if utils.InArray(eip.RefId, usedEipID) {
-				continue
-			}
-			eipResource = eip
-			usedEipID = append(usedEipID, eip.RefId)
-			break
+		natGatewayName := fmt.Sprintf("%s-nat-gateway-%s", cluster.Name, az.RefId)
+		// Get private subnet for the AZ
+		privateSubnets := cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_ZONE, az.RefId, ALICLOUD_TAG_KEY_TYPE, AlicloudResourcePrivate)
+		if len(privateSubnets) == 0 {
+			return errors.New("no private subnet found for AZ " + az.RefId)
 		}
-
-		if eipResource == nil {
-			// Allocate new EIP
-			eipReq := &vpc20160428.AllocateEipAddressRequest{
-				RegionId:           tea.String(cluster.Region),
-				Bandwidth:          tea.String("5"),
-				InternetChargeType: tea.String("PayByTraffic"),
-			}
-			eipRes, err := a.vpcClient.AllocateEipAddress(eipReq)
-			if err != nil {
-				return errors.Wrap(err, "failed to allocate eip address")
-			}
-
-			// Add tags to EIP
-			err = a.createVpcTags(cluster.Region, tea.StringValue(eipRes.Body.AllocationId), "EIP", eipTags)
-			if err != nil {
-				return errors.Wrap(err, "failed to tag eip")
-			}
-
-			eipResource = &CloudResource{
-				Name:  eipName,
-				RefId: tea.StringValue(eipRes.Body.AllocationId),
-				Type:  ResourceType_ELASTIC_IP,
-				Value: tea.StringValue(eipRes.Body.EipAddress),
-				Tags:  cluster.EncodeTags(eipTags),
-			}
-			cluster.AddCloudResource(eipResource)
-			a.log.Infof("elastic ip %s allocated", tea.StringValue(eipRes.Body.EipAddress))
-		}
-
-		// Get public subnet for the AZ
-		publicSubnets := cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_ZONE, az.Name, ALICLOUD_TAG_KEY_TYPE, AlicloudResourcePublic)
-		if len(publicSubnets) == 0 {
-			return errors.New("no public subnet found for AZ " + az.Name)
+		// Get Elastic IP
+		eips := cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, ALICLOUD_TAG_KEY_ZONE, az.RefId)
+		if len(eips) == 0 {
+			return errors.New("no eip found for AZ " + az.RefId)
 		}
 
 		// Create NAT Gateway
-		natGatewayTags := map[string]string{
-			ALICLOUD_TAG_KEY_NAME: natGatewayName,
-			ALICLOUD_TAG_KEY_TYPE: AlicloudResourcePublic,
-			ALICLOUD_TAG_KEY_ZONE: az.Name,
-		}
-
-		createNatReq := &vpc20160428.CreateNatGatewayRequest{
+		natRes, err := a.vpcClient.CreateNatGateway(&vpc20160428.CreateNatGatewayRequest{
 			RegionId:           tea.String(cluster.Region),
 			VpcId:              tea.String(vpc.RefId),
-			VSwitchId:          tea.String(publicSubnets[0].RefId),
+			VSwitchId:          tea.String(privateSubnets[0].RefId),
 			NatType:            tea.String("Enhanced"),
 			NetworkType:        tea.String("internet"),
 			Name:               tea.String(natGatewayName),
 			InternetChargeType: tea.String("PayByLcu"),
-		}
-
-		natRes, err := a.vpcClient.CreateNatGateway(createNatReq)
+		})
 		if err != nil {
 			return errors.Wrap(err, "failed to create nat gateway")
-		}
-
-		// Add tags to NAT Gateway
-		err = a.createVpcTags(cluster.Region, tea.StringValue(natRes.Body.NatGatewayId), "NAT_GATEWAY", natGatewayTags)
-		if err != nil {
-			return errors.Wrap(err, "failed to tag nat gateway")
 		}
 
 		// Associate EIP with NAT Gateway
 		_, err = a.vpcClient.AssociateEipAddress(&vpc20160428.AssociateEipAddressRequest{
 			RegionId:     tea.String(cluster.Region),
-			AllocationId: tea.String(eipResource.RefId),
+			AllocationId: tea.String(eips[0].RefId),
 			InstanceId:   natRes.Body.NatGatewayId,
 			InstanceType: tea.String("Nat"),
 		})
@@ -1246,28 +1303,17 @@ func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 		}
 
 		cluster.AddCloudResource(&CloudResource{
-			Name:         natGatewayName,
-			RefId:        tea.StringValue(natRes.Body.NatGatewayId),
-			Tags:         cluster.EncodeTags(natGatewayTags),
+			Name:  natGatewayName,
+			RefId: tea.StringValue(natRes.Body.NatGatewayId),
+			Tags: cluster.EncodeTags(map[string]string{
+				ALICLOUD_TAG_KEY_NAME: natGatewayName,
+				ALICLOUD_TAG_KEY_TYPE: AlicloudResourcePrivate,
+				ALICLOUD_TAG_KEY_ZONE: az.RefId,
+			}),
 			Type:         ResourceType_NAT_GATEWAY,
-			AssociatedId: publicSubnets[0].RefId,
+			AssociatedId: privateSubnets[0].RefId,
 		})
 		a.log.Infof("nat gateway %s created", tea.StringValue(natRes.Body.NatGatewayId))
-
-		// Wait for NAT Gateway to be available
-		for i := 0; i < 60; i++ {
-			natStatus, err := a.vpcClient.DescribeNatGateways(&vpc20160428.DescribeNatGatewaysRequest{
-				RegionId:     tea.String(cluster.Region),
-				NatGatewayId: natRes.Body.NatGatewayId,
-			})
-			if err != nil {
-				return errors.Wrap(err, "failed to get nat gateway status")
-			}
-			if len(natStatus.Body.NatGateways.NatGateway) > 0 && tea.StringValue(natStatus.Body.NatGateways.NatGateway[0].Status) == "Available" {
-				break
-			}
-			time.Sleep(30 * time.Second)
-		}
 	}
 
 	return nil
@@ -1278,7 +1324,6 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 	if vpc == nil {
 		return errors.New("vpc not found")
 	}
-
 	// List existing route tables
 	var pageNumber int32 = 1
 	existingRouteTables := make([]*vpc20160428.DescribeRouteTablesResponseBodyRouteTablesRouteTable, 0)
@@ -1298,95 +1343,53 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		pageNumber++
 	}
 
-	// Process existing route tables
-	for _, routeTable := range existingRouteTables {
-		if cluster.GetCloudResourceByRefID(ResourceType_ROUTE_TABLE, tea.StringValue(routeTable.RouteTableId)) != nil {
-			a.log.Infof("route table %s already exists", tea.StringValue(routeTable.RouteTableId))
-			continue
-		}
-
-		tags := make(map[string]string)
-
-		if val, ok := tags[ALICLOUD_TAG_KEY_TYPE]; !ok || (val != AlicloudResourcePublic && val != AlicloudResourcePrivate) {
-			continue
-		}
-
-		name := tags[ALICLOUD_TAG_KEY_NAME]
-		if tags[ALICLOUD_TAG_KEY_TYPE] == AlicloudResourcePublic && name != fmt.Sprintf("%s-public-rt", cluster.Name) {
-			continue
-		}
-		if tags[ALICLOUD_TAG_KEY_TYPE] == AlicloudResourcePrivate {
-			privateZoneName, ok := tags[ALICLOUD_TAG_KEY_ZONE]
-			if !ok {
-				continue
-			}
-			if name != fmt.Sprintf("%s-private-rt-%s", cluster.Name, privateZoneName) {
-				continue
+	// clear history route table
+	for _, routeTableCloudResource := range cluster.GetCloudResource(ResourceType_ROUTE_TABLE) {
+		routeTableCloudResourceExits := false
+		for _, routeTable := range existingRouteTables {
+			if routeTableCloudResource.RefId == tea.StringValue(routeTable.RouteTableId) {
+				routeTableCloudResourceExits = true
+				break
 			}
 		}
-
-		cluster.AddCloudResource(&CloudResource{
-			Name:         name,
-			RefId:        tea.StringValue(routeTable.RouteTableId),
-			Tags:         cluster.EncodeTags(tags),
-			AssociatedId: vpc.RefId,
-			Type:         ResourceType_ROUTE_TABLE,
-		})
-		a.log.Infof("route table %s already exists", tea.StringValue(routeTable.RouteTableId))
+		if !routeTableCloudResourceExits {
+			cluster.DeleteCloudResourceByRefID(ResourceType_ROUTE_TABLE, routeTableCloudResource.RefId)
+		}
 	}
 
 	// Create public route table
 	publicRouteTableName := fmt.Sprintf("%s-public-rt", cluster.Name)
-	publicRouteTableTags := map[string]string{
-		ALICLOUD_TAG_KEY_NAME: publicRouteTableName,
-		ALICLOUD_TAG_KEY_TYPE: AlicloudResourcePublic,
-	}
-
 	if cluster.GetCloudResourceByName(ResourceType_ROUTE_TABLE, publicRouteTableName) == nil {
+		// Get internet gateway
+		internetGateway := cluster.GetSingleCloudResource(ResourceType_INTERNET_GATEWAY)
+		if internetGateway == nil {
+			return errors.New("internet gateway not found")
+		}
 		// Create public route table
-		publicRouteTableReq := &vpc20160428.CreateRouteTableRequest{
+		publicRouteTableRes, err := a.vpcClient.CreateRouteTable(&vpc20160428.CreateRouteTableRequest{
 			RegionId:       tea.String(cluster.Region),
 			VpcId:          tea.String(vpc.RefId),
 			RouteTableName: tea.String(publicRouteTableName),
-		}
-		publicRouteTableRes, err := a.vpcClient.CreateRouteTable(publicRouteTableReq)
+			AssociateType:  tea.String("Gateway"),
+		})
 		if err != nil {
 			return errors.Wrap(err, "failed to create public route table")
 		}
-
-		// Add tags to public route table
-		err = a.createVpcTags(cluster.Region, tea.StringValue(publicRouteTableRes.Body.RouteTableId), "ROUTETABLE", publicRouteTableTags)
-		if err != nil {
-			return errors.Wrap(err, "failed to tag public route table")
-		}
-
-		cluster.AddCloudResource(&CloudResource{
-			Name:         publicRouteTableName,
-			RefId:        tea.StringValue(publicRouteTableRes.Body.RouteTableId),
-			Tags:         cluster.EncodeTags(publicRouteTableTags),
-			AssociatedId: vpc.RefId,
-			Type:         ResourceType_ROUTE_TABLE,
-		})
-		a.log.Infof("public route table %s created", tea.StringValue(publicRouteTableRes.Body.RouteTableId))
 
 		// Add route to Internet Gateway in public route table
 		_, err = a.vpcClient.CreateRouteEntry(&vpc20160428.CreateRouteEntryRequest{
 			RegionId:             tea.String(cluster.Region),
 			RouteTableId:         publicRouteTableRes.Body.RouteTableId,
 			DestinationCidrBlock: tea.String("0.0.0.0/0"),
-			NextHopType:          tea.String("InternetGateway"),
+			NextHopType:          tea.String("Ipv4Gateway"),
+			NextHopId:            tea.String(internetGateway.RefId),
 		})
 		if err != nil {
 			return errors.Wrap(err, "failed to add route to Internet Gateway")
 		}
 
 		// Associate public subnets with public route table
-		for _, subnetResource := range cluster.GetCloudResource(ResourceType_SUBNET) {
-			subnetResourceMapTags := cluster.DecodeTags(subnetResource.Tags)
-			if typeVal, ok := subnetResourceMapTags[ALICLOUD_TAG_KEY_TYPE]; !ok || typeVal != AlicloudResourcePublic {
-				continue
-			}
-
+		for _, subnetResource := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_TYPE, AlicloudResourcePublic) {
 			_, err = a.vpcClient.AssociateRouteTable(&vpc20160428.AssociateRouteTableRequest{
 				RegionId:     tea.String(cluster.Region),
 				RouteTableId: publicRouteTableRes.Body.RouteTableId,
@@ -1396,54 +1399,45 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 				return errors.Wrap(err, "failed to associate public subnet with route table")
 			}
 		}
+
+		cluster.AddCloudResource(&CloudResource{
+			Name:  publicRouteTableName,
+			RefId: tea.StringValue(publicRouteTableRes.Body.RouteTableId),
+			Tags: cluster.EncodeTags(map[string]string{
+				ALICLOUD_TAG_KEY_NAME: publicRouteTableName,
+				ALICLOUD_TAG_KEY_TYPE: AlicloudResourcePublic,
+			}),
+			AssociatedId: vpc.RefId,
+			Type:         ResourceType_ROUTE_TABLE,
+		})
+		a.log.Infof("public route table %s created", tea.StringValue(publicRouteTableRes.Body.RouteTableId))
 	}
 
 	// Create private route tables (one per AZ)
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		privateRouteTableName := fmt.Sprintf("%s-private-rt-%s", cluster.Name, az.Name)
+		if cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, ALICLOUD_TAG_KEY_ZONE, az.RefId) != nil {
+			continue
+		}
+		privateRouteTableName := fmt.Sprintf("%s-private-rt-%s", cluster.Name, az.RefId)
 		tags := map[string]string{
 			ALICLOUD_TAG_KEY_NAME: privateRouteTableName,
 			ALICLOUD_TAG_KEY_TYPE: AlicloudResourcePrivate,
-			ALICLOUD_TAG_KEY_ZONE: az.Name,
-		}
-
-		if cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, ALICLOUD_TAG_KEY_NAME, privateRouteTableName) != nil {
-			continue
+			ALICLOUD_TAG_KEY_ZONE: az.RefId,
 		}
 
 		// Create private route table
-		privateRouteTableReq := &vpc20160428.CreateRouteTableRequest{
+		privateRouteTableRes, err := a.vpcClient.CreateRouteTable(&vpc20160428.CreateRouteTableRequest{
 			RegionId:       tea.String(cluster.Region),
 			VpcId:          tea.String(vpc.RefId),
 			RouteTableName: tea.String(privateRouteTableName),
-		}
-		privateRouteTableRes, err := a.vpcClient.CreateRouteTable(privateRouteTableReq)
-		if err != nil {
-			return errors.Wrap(err, "failed to create private route table for AZ "+az.Name)
-		}
-
-		// Add tags to private route table
-		err = a.createVpcTags(cluster.Region, tea.StringValue(privateRouteTableRes.Body.RouteTableId), "ROUTETABLE", tags)
-		if err != nil {
-			return errors.Wrap(err, "failed to tag private route table")
-		}
-
-		cluster.AddCloudResource(&CloudResource{
-			Name:         privateRouteTableName,
-			RefId:        tea.StringValue(privateRouteTableRes.Body.RouteTableId),
-			Tags:         cluster.EncodeTags(tags),
-			Type:         ResourceType_ROUTE_TABLE,
-			AssociatedId: vpc.RefId,
+			AssociateType:  tea.String("Gateway"),
 		})
-		a.log.Infof("private route table %s created for AZ %s", tea.StringValue(privateRouteTableRes.Body.RouteTableId), az.Name)
+		if err != nil {
+			return errors.Wrap(err, "failed to create private route table for AZ "+az.RefId)
+		}
 
 		// Add route to NAT Gateway in private route table
-		for _, natGateway := range cluster.GetCloudResource(ResourceType_NAT_GATEWAY) {
-			natGatewayMapTags := cluster.DecodeTags(natGateway.Tags)
-			if zoneName, ok := natGatewayMapTags[ALICLOUD_TAG_KEY_ZONE]; !ok || zoneName != az.Name {
-				continue
-			}
-
+		for _, natGateway := range cluster.GetCloudResourceByTags(ResourceType_NAT_GATEWAY, ALICLOUD_TAG_KEY_ZONE, az.RefId) {
 			_, err = a.vpcClient.CreateRouteEntry(&vpc20160428.CreateRouteEntryRequest{
 				RegionId:             tea.String(cluster.Region),
 				RouteTableId:         privateRouteTableRes.Body.RouteTableId,
@@ -1452,23 +1446,29 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 				NextHopId:            tea.String(natGateway.RefId),
 			})
 			if err != nil {
-				return errors.Wrap(err, "failed to add route to NAT Gateway for AZ "+az.Name)
+				return errors.Wrap(err, "failed to add route to NAT Gateway for AZ "+az.RefId)
 			}
 		}
 
 		// Associate private subnets with private route table
-		for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_TYPE, AlicloudResourcePrivate, ALICLOUD_TAG_KEY_ZONE, az.Name) {
+		for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, ALICLOUD_TAG_KEY_TYPE, AlicloudResourcePrivate, ALICLOUD_TAG_KEY_ZONE, az.RefId) {
 			_, err = a.vpcClient.AssociateRouteTable(&vpc20160428.AssociateRouteTableRequest{
 				RegionId:     tea.String(cluster.Region),
 				RouteTableId: privateRouteTableRes.Body.RouteTableId,
 				VSwitchId:    tea.String(subnet.RefId),
 			})
 			if err != nil {
-				return errors.Wrap(err, "failed to associate private subnet with route table in AZ "+az.Name)
+				return errors.Wrap(err, "failed to associate private subnet with route table in AZ "+az.RefId)
 			}
 		}
+		cluster.AddCloudResource(&CloudResource{
+			Name:  privateRouteTableName,
+			RefId: tea.StringValue(privateRouteTableRes.Body.RouteTableId),
+			Tags:  cluster.EncodeTags(tags),
+			Type:  ResourceType_ROUTE_TABLE,
+		})
+		a.log.Infof("private route table %s created for AZ %s", tea.StringValue(privateRouteTableRes.Body.RouteTableId), az.RefId)
 	}
-
 	return nil
 }
 
@@ -1501,6 +1501,20 @@ func (a *AliCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 			break
 		}
 		pageNumber++
+	}
+
+	// clear history security group
+	for _, securityGroupCloudResource := range cluster.GetCloudResource(ResourceType_SECURITY_GROUP) {
+		securityGroupCloudResourceExits := false
+		for _, securityGroup := range existingSecurityGroups {
+			if securityGroupCloudResource.RefId == tea.StringValue(securityGroup.SecurityGroupId) {
+				securityGroupCloudResourceExits = true
+				break
+			}
+		}
+		if !securityGroupCloudResourceExits {
+			cluster.DeleteCloudResourceByRefID(ResourceType_SECURITY_GROUP, securityGroupCloudResource.RefId)
+		}
 	}
 
 	// Process existing security groups
@@ -1616,12 +1630,7 @@ func (a *AliCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 	return nil
 }
 
-func (a *AliCloudUsecase) createSLB(ctx context.Context, cluster *Cluster) error {
-	if cluster.Level == ClusterLevel_BASIC {
-		a.log.Info("skip create slb for basic cluster")
-		return nil
-	}
-
+func (a *AliCloudUsecase) CreateSLB(ctx context.Context, cluster *Cluster) error {
 	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
 	if vpc == nil {
 		return errors.New("vpc not found")
