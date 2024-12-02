@@ -1,7 +1,7 @@
 package biz
 
 import (
-	"fmt"
+	"encoding/json"
 	"strings"
 
 	"github.com/google/uuid"
@@ -96,10 +96,7 @@ func (c *Cluster) GetSingleCloudResource(resourceType ResourceType) *CloudResour
 }
 
 // getCloudResource by resourceType and tag value and tag key
-func (c *Cluster) GetCloudResourceByTags(resourceType ResourceType, tagKeyValues ...string) []*CloudResource {
-	if len(tagKeyValues)%2 != 0 {
-		return nil
-	}
+func (c *Cluster) GetCloudResourceByTags(resourceType ResourceType, tagKeyValues map[ResourceTypeKeyValue]any) []*CloudResource {
 	cloudResources := make([]*CloudResource, 0)
 	for _, resource := range c.GetCloudResource(resourceType) {
 		if resource.Tags == "" {
@@ -107,10 +104,8 @@ func (c *Cluster) GetCloudResourceByTags(resourceType ResourceType, tagKeyValues
 		}
 		resourceTagsMap := c.DecodeTags(resource.Tags)
 		match := true
-		for i := 0; i < len(tagKeyValues); i += 2 {
-			tagKey := tagKeyValues[i]
-			tagValue := tagKeyValues[i+1]
-			if resourceTagsMap[tagKey] != tagValue {
+		for key, value := range tagKeyValues {
+			if resourceTagsMap[key] != value {
 				match = false
 				break
 			}
@@ -125,34 +120,28 @@ func (c *Cluster) GetCloudResourceByTags(resourceType ResourceType, tagKeyValues
 	return cloudResources
 }
 
-func (c *Cluster) GetCloudResourceByTagsSingle(resourceType ResourceType, tagKeyValues ...string) *CloudResource {
-	resources := c.GetCloudResourceByTags(resourceType, tagKeyValues...)
+func (c *Cluster) GetCloudResourceByTagsSingle(resourceType ResourceType, tagKeyValues map[ResourceTypeKeyValue]any) *CloudResource {
+	resources := c.GetCloudResourceByTags(resourceType, tagKeyValues)
 	if len(resources) == 0 {
 		return nil
 	}
 	return resources[0]
 }
 
-func (c *Cluster) EncodeTags(tags map[string]string) string {
-	tagStr := ""
-	for key, value := range tags {
-		tagStr += fmt.Sprintf("%s:%s,", key, value)
+func (c *Cluster) EncodeTags(tags map[ResourceTypeKeyValue]any) string {
+	if tags == nil {
+		return ""
 	}
-	return tagStr
+	jsonBytes, _ := json.Marshal(tags)
+	return string(jsonBytes)
 }
 
-func (c *Cluster) DecodeTags(tags string) map[string]string {
-	tagsMap := make(map[string]string)
+func (c *Cluster) DecodeTags(tags string) map[ResourceTypeKeyValue]any {
+	tagsMap := make(map[ResourceTypeKeyValue]any)
 	if tags == "" {
 		return tagsMap
 	}
-	for _, tag := range strings.Split(tags, ",") {
-		tagKeyValue := strings.Split(tag, ":")
-		if len(tagKeyValue) != 2 {
-			continue
-		}
-		tagsMap[tagKeyValue[0]] = tagKeyValue[1]
-	}
+	json.Unmarshal([]byte(tags), &tagsMap)
 	return tagsMap
 }
 
@@ -204,7 +193,7 @@ func (c *Cluster) DeleteCloudResourceByRefID(resourceType ResourceType, refID st
 }
 
 // delete cloud resource by resourceType and tag value and tag key
-func (c *Cluster) DeleteCloudResourceByTags(resourceType ResourceType, tagKeyValues ...string) {
+func (c *Cluster) DeleteCloudResourceByTags(resourceType ResourceType, tagKeyValues ...ResourceTypeKeyValue) {
 	cloudResources := make([]*CloudResource, 0)
 	for _, resource := range c.CloudResources {
 		if resource.Tags == "" {
@@ -294,4 +283,39 @@ func (c *Cluster) GetNodeGroupByName(nodeGroupName string) *NodeGroup {
 		}
 	}
 	return nil
+}
+
+func (c *Cluster) DistributeNodePrivateSubnets(nodeIndex int) string {
+	tags := GetTags()
+	tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
+	subnets := c.GetCloudResourceByTags(ResourceType_SUBNET, tags)
+	if len(subnets) == 0 {
+		return ""
+	}
+	nodeSize := len(c.Nodes)
+	subnetsSize := len(subnets)
+	if nodeSize <= subnetsSize {
+		return subnets[nodeIndex%subnetsSize].RefId
+	}
+	interval := nodeSize / subnetsSize
+	return subnets[(nodeIndex/interval)%subnetsSize].RefId
+}
+
+// get zone id by subnet ref id
+func (c *Cluster) GetZoneIDBySubnetRefID(subnetRefID string, zoneKey ResourceTypeKeyValue) string {
+	for _, subnet := range c.GetCloudResource(ResourceType_SUBNET) {
+		if subnet.RefId == subnetRefID {
+			tagMaps := c.DecodeTags(subnet.Tags)
+			if _, ok := tagMaps[zoneKey]; !ok {
+				return ""
+			}
+			return cast.ToString(tagMaps[zoneKey])
+
+		}
+	}
+	return ""
+}
+
+func GetTags() map[ResourceTypeKeyValue]any {
+	return make(map[ResourceTypeKeyValue]any)
 }

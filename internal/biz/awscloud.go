@@ -3,6 +3,7 @@ package biz
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -19,30 +20,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamTypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
-	smithy "github.com/aws/smithy-go"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"github.com/spf13/cast"
 )
 
 const (
 	awsDefaultRegion = "us-east-1"
-	AwsTagKeyName    = "Name"
-	AwsTagKeyType    = "Type"
-	AwsTagKeyZone    = "Zone"
-	AwsTagKeyVpc     = "Vpc"
 
-	AwsResourcePublic        = "Public"
-	AwsResourcePrivate       = "Private"
-	AwsReosurceUnBind        = "false"
-	AwsReousrceBostionHostSG = "bostionHost"
-	AwsResourceHttpSG        = "http"
-)
-
-const (
 	TimeoutPerInstance = 5 * time.Minute
 	AwsNotFound        = "NotFound"
+
+	AWS_REGION            = "AWS_REGION"
+	AWS_ACCESS_KEY_ID     = "AWS_ACCESS_KEY_ID"
+	AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
+	AWS_DEFAULT_REGION    = "AWS_DEFAULT_REGION"
 )
 
 type AwsCloudUsecase struct {
@@ -52,7 +45,6 @@ type AwsCloudUsecase struct {
 	servicequotasClient *servicequotas.Client
 	iamClient           *iam.Client
 	log                 *log.Helper
-	dryRun              bool
 }
 
 func NewAwsCloudUseCase(logger log.Logger) *AwsCloudUsecase {
@@ -62,18 +54,14 @@ func NewAwsCloudUseCase(logger log.Logger) *AwsCloudUsecase {
 	return c
 }
 
-func (a *AwsCloudUsecase) SetDryRun(dryRun bool) {
-	a.dryRun = dryRun
-}
-
 func (a *AwsCloudUsecase) Connections(ctx context.Context, cluster *Cluster) error {
 	if cluster.Region == "" {
 		cluster.Region = awsDefaultRegion
 	}
-	os.Setenv("AWS_REGION", cluster.Region)
-	os.Setenv("AWS_DEFAULT_REGION", cluster.Region)
-	os.Setenv("AWS_ACCESS_KEY_ID", cluster.AccessId)
-	os.Setenv("AWS_SECRET_ACCESS_KEY", cluster.AccessKey)
+	os.Setenv(AWS_REGION, cluster.Region)
+	os.Setenv(AWS_DEFAULT_REGION, cluster.Region)
+	os.Setenv(AWS_ACCESS_KEY_ID, cluster.AccessId)
+	os.Setenv(AWS_SECRET_ACCESS_KEY, cluster.AccessKey)
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(cluster.Region))
 	if err != nil {
 		return err
@@ -137,7 +125,9 @@ func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 		return errors.New("vpc not found")
 	}
 	var subnetIds []string
-	for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, AwsTagKeyType, AwsResourcePrivate) {
+	searchTags := GetTags()
+	searchTags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
+	for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, searchTags) {
 		subnetIds = append(subnetIds, subnet.RefId)
 	}
 	if len(subnetIds) == 0 {
@@ -157,7 +147,7 @@ func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 			},
 			RoleArn: aws.String(roleArn),
 			Version: aws.String(cluster.Version),
-			Tags:    map[string]string{AwsTagKeyName: cluster.Name},
+			Tags:    map[string]string{ResourceTypeKeyValue_NAME.String(): cluster.Name},
 		}
 		_, err = a.eksClient.CreateCluster(ctx, createClusterInput)
 		if err != nil {
@@ -571,7 +561,7 @@ func (a *AwsCloudUsecase) SetByNodeGroups(ctx context.Context, cluster *Cluster)
 // KeyPair
 func (a *AwsCloudUsecase) ImportKeyPair(ctx context.Context, cluster *Cluster) error {
 	keyName := cluster.Name + "-keypair"
-	tags := map[string]string{AwsTagKeyName: keyName}
+	tags := map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: keyName}
 	keyPairOutputs, err := a.ec2Client.DescribeKeyPairs(ctx, &ec2.DescribeKeyPairsInput{
 		KeyNames: []string{keyName},
 	})
@@ -598,7 +588,6 @@ func (a *AwsCloudUsecase) ImportKeyPair(ctx context.Context, cluster *Cluster) e
 	}
 
 	keyPairOutput, err := a.ec2Client.ImportKeyPair(ctx, &ec2.ImportKeyPairInput{
-		DryRun:            aws.Bool(a.dryRun),
 		KeyName:           aws.String(keyName),
 		PublicKeyMaterial: []byte(cluster.PublicKey),
 		TagSpecifications: []ec2Types.TagSpecification{
@@ -608,7 +597,7 @@ func (a *AwsCloudUsecase) ImportKeyPair(ctx context.Context, cluster *Cluster) e
 			},
 		},
 	})
-	if err := a.handlerError(err); err != nil {
+	if err != nil {
 		return errors.Wrap(err, "failed to import key pair")
 	}
 	keyPairCloudResource := &CloudResource{
@@ -616,11 +605,7 @@ func (a *AwsCloudUsecase) ImportKeyPair(ctx context.Context, cluster *Cluster) e
 		Tags: cluster.EncodeTags(tags),
 		Type: ResourceType_KEY_PAIR,
 	}
-	if a.dryRun {
-		keyPairCloudResource.RefId = uuid.New().String()
-	} else {
-		keyPairCloudResource.RefId = aws.ToString(keyPairOutput.KeyPairId)
-	}
+	keyPairCloudResource.RefId = aws.ToString(keyPairOutput.KeyPairId)
 	cluster.AddCloudResource(keyPairCloudResource)
 	a.log.Info("% key pair imported", keyName)
 	return nil
@@ -704,45 +689,34 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 	}
 	if len(deleteInstanceIDs) > 0 {
 		_, err = a.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
-			DryRun:      aws.Bool(a.dryRun),
 			InstanceIds: deleteInstanceIDs,
 		})
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return errors.Wrap(err, "failed to terminate instances")
-		}
-		if a.dryRun {
-			return nil
 		}
 		waiter := ec2.NewInstanceTerminatedWaiter(a.ec2Client)
 		err := waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: deleteInstanceIDs}, time.Duration(len(deleteInstanceIDs))*TimeoutPerInstance)
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return fmt.Errorf("failed to wait for instance termination: %w", err)
 		}
 		for _, node := range cluster.Nodes {
 			if utils.InArray(node.InstanceId, deleteInstanceIDs) {
+				node.InstanceId = ""
 				node.Status = NodeStatus_NODE_DELETED
 			}
 		}
-		a.log.Info("instances terminated")
 	}
 
 	// Create instances
 	instanceIds := make([]string, 0)
-	instanceOuputs := make([]ec2Types.Instance, 0)
-	for index, nodeGroup := range cluster.NodeGroups {
-		var currentTargetSize int32 = 0
-		for _, node := range cluster.Nodes {
-			if node.NodeGroupId == nodeGroup.Id && node.Status == NodeStatus_NODE_CREATING {
-				node.User = nodeGroup.DefaultUsername
-				currentTargetSize++
-			}
-		}
-		sgs := cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, AwsTagKeyType, AwsResourceHttpSG)
+	for _, nodeGroup := range cluster.NodeGroups {
+		searchTags := GetTags()
+		searchTags[ResourceTypeKeyValue_SECURITY_GROUP_TYPE] = ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER
+		sgs := cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, searchTags)
 		sgIDs := make([]string, 0)
 		for _, v := range sgs {
 			sgIDs = append(sgIDs, v.RefId)
 		}
-		privateSubnetID := a.distributeNodeSubnets(cluster, index)
 		// root Volume
 		blockDeviceMappings := []ec2Types.BlockDeviceMapping{
 			{
@@ -765,63 +739,55 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 				},
 			})
 		}
-		instancesOutput, err := a.ec2Client.RunInstances(ctx, &ec2.RunInstancesInput{
-			DryRun:              aws.Bool(a.dryRun),
+		instancesInput := &ec2.RunInstancesInput{
 			ImageId:             aws.String(nodeGroup.Image),
 			InstanceType:        ec2Types.InstanceType(nodeGroup.InstanceType),
 			KeyName:             aws.String(cluster.GetSingleCloudResource(ResourceType_KEY_PAIR).Name),
-			MaxCount:            aws.Int32(currentTargetSize),
-			MinCount:            aws.Int32(currentTargetSize),
+			MaxCount:            aws.Int32(1),
+			MinCount:            aws.Int32(1),
 			SecurityGroupIds:    sgIDs,
-			SubnetId:            aws.String(privateSubnetID),
 			BlockDeviceMappings: blockDeviceMappings,
-		})
-		if err := a.handlerError(err); err != nil {
-			return errors.Wrap(err, "failed to run instances")
 		}
-		if instancesOutput == nil {
-			continue
-		}
-		for _, instance := range instancesOutput.Instances {
-			instanceIds = append(instanceIds, aws.ToString(instance.InstanceId))
-			instanceOuputs = append(instanceOuputs, instance)
-			for _, blockDevice := range instance.BlockDeviceMappings {
-				cluster.AddCloudResource(&CloudResource{
-					Name:         aws.ToString(blockDevice.DeviceName),
-					RefId:        aws.ToString(blockDevice.Ebs.VolumeId),
-					AssociatedId: aws.ToString(instance.InstanceId),
-					Value:        aws.ToString(blockDevice.Ebs.AssociatedResource),
-					Type:         ResourceType_DATA_DEVICE,
-				})
+		for index, node := range cluster.Nodes {
+			if node.Status != NodeStatus_NODE_CREATING || node.NodeGroupId != nodeGroup.Id {
+				continue
+			}
+			privateSubnetID := cluster.DistributeNodePrivateSubnets(index)
+			instancesInput.SubnetId = aws.String(privateSubnetID)
+			instancesInput.TagSpecifications = []ec2Types.TagSpecification{
+				{
+					ResourceType: ec2Types.ResourceTypeInstance,
+					Tags:         a.mapToEc2Tags(cluster.DecodeTags(node.Labels)),
+				},
+			}
+			instancesOutput, err := a.ec2Client.RunInstances(ctx, instancesInput)
+			if err != nil {
+				return errors.Wrap(err, "failed to run instances")
+			}
+			node.Status = NodeStatus_NODE_PENDING
+			for _, instance := range instancesOutput.Instances {
+				instanceIds = append(instanceIds, aws.ToString(instance.InstanceId))
+				node.InstanceId = aws.ToString(instance.InstanceId)
+				node.InternalIp = aws.ToString(instance.PrivateIpAddress)
+				node.ExternalIp = aws.ToString(instance.PublicIpAddress)
+				for _, blockDevice := range instance.BlockDeviceMappings {
+					cluster.AddCloudResource(&CloudResource{
+						Name:         aws.ToString(blockDevice.DeviceName),
+						RefId:        aws.ToString(blockDevice.Ebs.VolumeId),
+						AssociatedId: aws.ToString(instance.InstanceId),
+						Value:        aws.ToString(blockDevice.Ebs.AssociatedResource),
+						Type:         ResourceType_DATA_DEVICE,
+					})
+				}
 			}
 		}
 	}
 	// wait for instance running
 	if len(instanceIds) > 0 {
-		if a.dryRun {
-			return nil
-		}
 		waiter := ec2.NewInstanceRunningWaiter(a.ec2Client)
 		err := waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: instanceIds}, time.Duration(len(instanceIds))*TimeoutPerInstance)
 		if err != nil {
 			return errors.Wrap(err, "failed to wait for instance running")
-		}
-	}
-
-	// copy instance info to node
-	for _, instance := range instanceOuputs {
-		for _, node := range cluster.Nodes {
-			if node.Status != NodeStatus_NODE_CREATING {
-				continue
-			}
-			nodeTags := cluster.DecodeTags(node.Labels)
-			nodeTags[AwsTagKeyName] = node.Name
-			a.createTags(ctx, node.InstanceId, ResourceType_INSTANCE_TYPE, nodeTags)
-			node.InstanceId = aws.ToString(instance.InstanceId)
-			node.InternalIp = aws.ToString(instance.PrivateIpAddress)
-			node.ExternalIp = aws.ToString(instance.PublicIpAddress)
-			node.Status = NodeStatus_NODE_PENDING
-			break
 		}
 	}
 	return nil
@@ -841,21 +807,18 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 			return nil
 		}
 		_, err := a.ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
-			DryRun:      aws.Bool(a.dryRun),
 			InstanceIds: []string{cluster.BostionHost.InstanceId},
 		})
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return errors.Wrap(err, "failed to terminate instances")
-		}
-		if a.dryRun {
-			return nil
 		}
 		waiter := ec2.NewInstanceTerminatedWaiter(a.ec2Client)
 		err = waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{cluster.BostionHost.InstanceId}}, time.Duration(1)*TimeoutPerInstance)
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return fmt.Errorf("failed to wait for instance termination: %w", err)
 		}
 		cluster.BostionHost.Status = NodeStatus_NODE_DELETED
+		cluster.BostionHost.InstanceId = ""
 		return nil
 	}
 
@@ -881,12 +844,16 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	if err != nil {
 		return err
 	}
-	publicSubnet := cluster.GetCloudResourceByTags(ResourceType_SUBNET, AwsTagKeyType, AwsResourcePublic)
+	searchTags := GetTags()
+	searchTags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
+	publicSubnet := cluster.GetCloudResourceByTags(ResourceType_SUBNET, searchTags)
 	if len(publicSubnet) == 0 {
 		return errors.New("public subnet not found in the ManageBostionHost")
 	}
 	sgIds := make([]string, 0)
-	for _, v := range cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, AwsTagKeyType, AwsReousrceBostionHostSG) {
+	searchTags = GetTags()
+	searchTags[ResourceTypeKeyValue_SECURITY_GROUP_TYPE] = ResourceTypeKeyValue_SECURITY_GROUP_TYPE_BOSTION
+	for _, v := range cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, searchTags) {
 		sgIds = append(sgIds, v.RefId)
 	}
 	if len(sgIds) == 0 {
@@ -898,9 +865,8 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 		return errors.New("key pair not found in the ManageBostionHost")
 	}
 
-	bostionHostTag := map[string]string{AwsTagKeyName: fmt.Sprintf("%s-%s", cluster.Name, "bostion")}
+	bostionHostTag := map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: fmt.Sprintf("%s-%s", cluster.Name, "bostion")}
 	instanceOutput, err := a.ec2Client.RunInstances(ctx, &ec2.RunInstancesInput{
-		DryRun:       aws.Bool(a.dryRun),
 		ImageId:      image.ImageId,
 		InstanceType: ec2Types.InstanceType(instanceType.InstanceType),
 		MaxCount:     aws.Int32(1),
@@ -933,11 +899,8 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 			},
 		},
 	})
-	if err := a.handlerError(err); err != nil {
+	if err != nil {
 		return errors.Wrap(err, "failed to run instances in the ManageBostionHost")
-	}
-	if a.dryRun {
-		return nil
 	}
 
 	instanceIds := make([]string, 0)
@@ -948,7 +911,7 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	err = waiter.Wait(ctx, &ec2.DescribeInstancesInput{
 		InstanceIds: instanceIds,
 	}, time.Duration(1)*TimeoutPerInstance)
-	if err := a.handlerError(err); err != nil {
+	if err != nil {
 		return fmt.Errorf("failed to wait for instance running: %w", err)
 	}
 	instances, err := a.getInstances(ctx, vpcCloudResource, instanceIds...)
@@ -967,7 +930,7 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 		}
 		// memory
 		if instanceType.MemoryInfo != nil && instanceType.MemoryInfo.SizeInMiB != nil {
-			cluster.BostionHost.Memory = int32(aws.ToInt64(instanceType.MemoryInfo.SizeInMiB) / 1024)
+			cluster.BostionHost.Memory = int32(math.Ceil(float64(aws.ToInt64(instanceType.MemoryInfo.SizeInMiB)) / float64(1024)))
 		}
 	}
 	return nil
@@ -1002,15 +965,12 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 	if len(cluster.GetCloudResource(ResourceType_VPC)) > 0 {
 		cluster.DeleteCloudResource(ResourceType_VPC)
 	}
-	vpcTags := map[string]string{AwsTagKeyName: vpcName}
+	vpcTags := map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: vpcName}
 	for _, vpc := range vpcs {
 		if len(cluster.GetCloudResource(ResourceType_VPC)) != 0 {
 			return nil
 		}
-		vpcTags, differ := a.checkTags(vpcTags, vpc.Tags)
-		if differ {
-			a.createTags(ctx, aws.ToString(vpc.VpcId), ResourceType_VPC, vpcTags)
-		}
+		a.createTags(ctx, aws.ToString(vpc.VpcId), ResourceType_VPC, vpcTags)
 		cluster.IpCidr = aws.ToString(vpc.CidrBlock)
 		cluster.AddCloudResource(&CloudResource{
 			RefId: aws.ToString(vpc.VpcId),
@@ -1027,7 +987,6 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 	vpcResource := &CloudResource{Name: vpcName, Tags: cluster.EncodeTags(vpcTags), Type: ResourceType_VPC}
 	vpcOutput, err := a.ec2Client.CreateVpc(ctx, &ec2.CreateVpcInput{
 		CidrBlock: aws.String(cluster.IpCidr),
-		DryRun:    aws.Bool(a.dryRun),
 		TagSpecifications: []ec2Types.TagSpecification{
 			{
 				ResourceType: ec2Types.ResourceTypeVpc,
@@ -1035,22 +994,18 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 			},
 		},
 	})
-	if err := a.handlerError(err); err != nil {
+	if err != nil {
 		return errors.Wrap(err, "failed to create VPC")
 	}
-	if a.dryRun {
-		vpcResource.RefId = uuid.New().String()
-	} else {
-		vpcResource.RefId = aws.ToString(vpcOutput.Vpc.VpcId)
-		_, err = a.ec2Client.ModifyVpcAttribute(ctx, &ec2.ModifyVpcAttributeInput{
-			VpcId: vpcOutput.Vpc.VpcId,
-			EnableDnsSupport: &ec2Types.AttributeBooleanValue{
-				Value: aws.Bool(true),
-			},
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to enable DNS support for VPC, but vpc is created")
-		}
+	vpcResource.RefId = aws.ToString(vpcOutput.Vpc.VpcId)
+	_, err = a.ec2Client.ModifyVpcAttribute(ctx, &ec2.ModifyVpcAttributeInput{
+		VpcId: vpcOutput.Vpc.VpcId,
+		EnableDnsSupport: &ec2Types.AttributeBooleanValue{
+			Value: aws.Bool(true),
+		},
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to enable DNS support for VPC, but vpc is created")
 	}
 	cluster.AddCloudResource(vpcResource)
 	a.log.Infof("vpc %s created", vpcName)
@@ -1118,23 +1073,18 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 				a.log.Infof("subnet %s already exists", aws.ToString(subnet.SubnetId))
 				continue
 			}
-			tags := make(map[string]string)
-			name := ""
-			for _, tag := range subnet.Tags {
-				tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-			}
+			tags := GetTags()
+			var name string
 			if i < 2 {
 				name = fmt.Sprintf("%s-private-subnet-%s-%d", cluster.Name, aws.ToString(subnet.AvailabilityZone), i+1)
-				tags[AwsTagKeyType] = AwsResourcePrivate
+				tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
 			} else {
 				name = fmt.Sprintf("%s-public-subnet-%s", cluster.Name, aws.ToString(subnet.AvailabilityZone))
-				tags[AwsTagKeyType] = AwsResourcePublic
+				tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
 			}
-			tags[AwsTagKeyName] = name
-			tags[AwsTagKeyZone] = zoneName
-			if tags, differ := a.checkTags(tags, subnet.Tags); differ {
-				a.createTags(ctx, aws.ToString(subnet.SubnetId), ResourceType_SUBNET, tags)
-			}
+			tags[ResourceTypeKeyValue_NAME] = name
+			tags[ResourceTypeKeyValue_ZONE] = zoneName
+			a.createTags(ctx, aws.ToString(subnet.SubnetId), ResourceType_SUBNET, tags)
 			cluster.AddCloudResource(&CloudResource{
 				Name:  name,
 				RefId: aws.ToString(subnet.SubnetId),
@@ -1183,12 +1133,13 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		// Create private subnets
 		for j := 0; j < 2; j++ {
 			name := fmt.Sprintf("%s-private-subnet-%s-%d", cluster.Name, az.Name, j+1)
-			tags := map[string]string{
-				AwsTagKeyName: name,
-				AwsTagKeyType: AwsResourcePrivate,
-				AwsTagKeyZone: az.Name,
-			}
-			if cluster.GetCloudResourceByTags(ResourceType_SUBNET, AwsTagKeyName, name) != nil {
+			tags := GetTags()
+			tags[ResourceTypeKeyValue_NAME] = name
+			tags[ResourceTypeKeyValue_ZONE] = az.Name
+			tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
+			searchTags := GetTags()
+			searchTags[ResourceTypeKeyValue_NAME] = name
+			if cluster.GetCloudResourceByTags(ResourceType_SUBNET, searchTags) != nil {
 				continue
 			}
 			cidr := subnetCidrs[i*2+j]
@@ -1196,7 +1147,6 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 				VpcId:            aws.String(vpc.RefId),
 				CidrBlock:        aws.String(cidr),
 				AvailabilityZone: &az.Name,
-				DryRun:           aws.Bool(a.dryRun),
 				TagSpecifications: []ec2Types.TagSpecification{
 					{
 						ResourceType: ec2Types.ResourceTypeSubnet,
@@ -1204,7 +1154,7 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 					},
 				},
 			})
-			if err := a.handlerError(err); err != nil {
+			if err != nil {
 				return errors.Wrap(err, "failed to create private subnet")
 			}
 			privateSubnetCloudResource := &CloudResource{
@@ -1213,23 +1163,20 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 				Tags:         cluster.EncodeTags(tags),
 				Type:         ResourceType_SUBNET,
 			}
-			if a.dryRun {
-				privateSubnetCloudResource.RefId = uuid.New().String()
-			} else {
-				privateSubnetCloudResource.RefId = aws.ToString(subnetOutput.Subnet.SubnetId)
-			}
+			privateSubnetCloudResource.RefId = aws.ToString(subnetOutput.Subnet.SubnetId)
 			cluster.AddCloudResource(privateSubnetCloudResource)
 			a.log.Infof("private subnet %s created", name)
 		}
 
 		// Create public subnet
 		name := fmt.Sprintf("%s-public-subnet-%s", cluster.Name, az.Name)
-		tags := map[string]string{
-			AwsTagKeyName: name,
-			AwsTagKeyType: AwsResourcePublic,
-			AwsTagKeyZone: az.Name,
-		}
-		if cluster.GetCloudResourceByTags(ResourceType_SUBNET, AwsTagKeyName, name) != nil {
+		tags := GetTags()
+		tags[ResourceTypeKeyValue_NAME] = name
+		tags[ResourceTypeKeyValue_ZONE] = az.Name
+		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
+		searchTags := GetTags()
+		searchTags[ResourceTypeKeyValue_NAME] = name
+		if cluster.GetCloudResourceByTags(ResourceType_SUBNET, searchTags) != nil {
 			continue
 		}
 		// Create public subnet
@@ -1238,7 +1185,6 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			VpcId:            aws.String(vpc.RefId),
 			CidrBlock:        aws.String(cidr),
 			AvailabilityZone: &az.Name,
-			DryRun:           aws.Bool(a.dryRun),
 			TagSpecifications: []ec2Types.TagSpecification{
 				{
 					ResourceType: ec2Types.ResourceTypeSubnet,
@@ -1246,7 +1192,7 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 				},
 			},
 		})
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return errors.Wrap(err, "failed to create public subnet")
 		}
 		publicSubnetCloudResource := &CloudResource{
@@ -1255,11 +1201,7 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			Tags:         cluster.EncodeTags(tags),
 			Type:         ResourceType_SUBNET,
 		}
-		if a.dryRun {
-			publicSubnetCloudResource.RefId = uuid.New().String()
-		} else {
-			publicSubnetCloudResource.RefId = aws.ToString(subnetOutput.Subnet.SubnetId)
-		}
+		publicSubnetCloudResource.RefId = aws.ToString(subnetOutput.Subnet.SubnetId)
 		cluster.AddCloudResource(publicSubnetCloudResource)
 		a.log.Infof("public subnet %s created", name)
 	}
@@ -1316,29 +1258,17 @@ func (a *AwsCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cl
 		}
 		if len(igw.Attachments) == 0 {
 			_, err := a.ec2Client.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
-				DryRun:            aws.Bool(a.dryRun),
 				InternetGatewayId: igw.InternetGatewayId,
 				VpcId:             aws.String(vpc.RefId),
 			})
-			if err := a.handlerError(err); err != nil {
+			if err != nil {
 				return errors.Wrap(err, "failed to attach Internet Gateway")
 			}
 		}
-		name := ""
-		tags := make(map[string]string)
-		for _, tag := range igw.Tags {
-			if aws.ToString(tag.Key) == AwsTagKeyName {
-				name = aws.ToString(tag.Value)
-			}
-			tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
-		if name == "" {
-			name = fmt.Sprintf("%s-igw", cluster.Name)
-		}
-		tags[AwsTagKeyName] = name
-		if tags, differ := a.checkTags(tags, igw.Tags); differ {
-			a.createTags(ctx, aws.ToString(igw.InternetGatewayId), ResourceType_INTERNET_GATEWAY, tags)
-		}
+		name := fmt.Sprintf("%s-igw", cluster.Name)
+		tags := GetTags()
+		tags[ResourceTypeKeyValue_NAME] = name
+		a.createTags(ctx, aws.ToString(igw.InternetGatewayId), ResourceType_INTERNET_GATEWAY, tags)
 		cluster.AddCloudResource(&CloudResource{
 			Name:         name,
 			RefId:        aws.ToString(igw.InternetGatewayId),
@@ -1354,7 +1284,8 @@ func (a *AwsCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cl
 
 	// Create Internet Gateway if it doesn't exist
 	name := fmt.Sprintf("%s-igw", cluster.Name)
-	tags := map[string]string{AwsTagKeyName: name}
+	tags := GetTags()
+	tags[ResourceTypeKeyValue_NAME] = name
 	internatGatewayCloudResource := &CloudResource{
 		Name:         name,
 		Tags:         cluster.EncodeTags(tags),
@@ -1362,7 +1293,6 @@ func (a *AwsCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cl
 		Type:         ResourceType_INTERNET_GATEWAY,
 	}
 	igwOutput, err := a.ec2Client.CreateInternetGateway(ctx, &ec2.CreateInternetGatewayInput{
-		DryRun: aws.Bool(a.dryRun),
 		TagSpecifications: []ec2Types.TagSpecification{
 			{
 				ResourceType: ec2Types.ResourceTypeInternetGateway,
@@ -1370,21 +1300,16 @@ func (a *AwsCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cl
 			},
 		},
 	})
-	if err := a.handlerError(err); err != nil {
+	if err != nil {
 		return errors.Wrap(err, "failed to create Internet Gateway")
 	}
-	if a.dryRun {
-		internatGatewayCloudResource.RefId = uuid.New().String()
-	} else {
-		internatGatewayCloudResource.RefId = aws.ToString(igwOutput.InternetGateway.InternetGatewayId)
-	}
+	internatGatewayCloudResource.RefId = aws.ToString(igwOutput.InternetGateway.InternetGatewayId)
 	cluster.AddCloudResource(internatGatewayCloudResource)
 	_, err = a.ec2Client.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
-		DryRun:            aws.Bool(a.dryRun),
 		InternetGatewayId: aws.String(cluster.GetSingleCloudResource(ResourceType_INTERNET_GATEWAY).RefId),
 		VpcId:             aws.String(vpc.RefId),
 	})
-	if err := a.handlerError(err); err != nil {
+	if err != nil {
 		return errors.Wrap(err, "failed to attach Internet Gateway")
 	}
 	a.log.Infof("internet gateway %s created", name)
@@ -1449,19 +1374,15 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			continue
 		}
 		subnetCloudResourceMapTags := cluster.DecodeTags(subnetCloudResource.Tags)
-		if val, ok := subnetCloudResourceMapTags[AwsTagKeyType]; !ok || val != AwsResourcePublic {
+		if val, ok := subnetCloudResourceMapTags[ResourceTypeKeyValue_ACCESS]; !ok || val != ResourceTypeKeyValue_ACCESS_PUBLIC {
 			continue
 		}
-		tags := make(map[string]string)
-		for _, tag := range natGateway.Tags {
-			tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
-		name := a.getNatgatewayName(cluster.Name, subnetCloudResourceMapTags[AwsTagKeyZone])
-		tags[AwsTagKeyZone] = subnetCloudResourceMapTags[AwsTagKeyZone]
-		tags[AwsTagKeyName] = name
-		if tags, differ := a.checkTags(tags, natGateway.Tags); differ {
-			a.createTags(ctx, aws.ToString(natGateway.NatGatewayId), ResourceType_NAT_GATEWAY, tags)
-		}
+		tags := GetTags()
+		zoneName := cast.ToString(subnetCloudResourceMapTags[ResourceTypeKeyValue_ZONE])
+		name := a.getNatgatewayName(cluster.Name, zoneName)
+		tags[ResourceTypeKeyValue_ZONE] = zoneName
+		tags[ResourceTypeKeyValue_NAME] = name
+		a.createTags(ctx, aws.ToString(natGateway.NatGatewayId), ResourceType_NAT_GATEWAY, tags)
 		cluster.AddCloudResource(&CloudResource{
 			Name:         name,
 			RefId:        aws.ToString(natGateway.NatGatewayId),
@@ -1502,29 +1423,23 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			continue
 		}
 		name := ""
-		tags := make(map[string]string)
-		for _, tag := range eip.Tags {
-			if aws.ToString(tag.Key) == AwsTagKeyName {
-				name = aws.ToString(tag.Value)
+		tags := GetTags()
+		eipNoExitsZoneName := ""
+		for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
+			eip := cluster.GetCloudResourceByTagsSingle(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{
+				ResourceTypeKeyValue_ZONE: az.Name,
+			})
+			if eip == nil {
+				eipNoExitsZoneName = az.Name
+				break
 			}
-			tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
 		}
-		if _, ok := tags[AwsTagKeyZone]; !ok {
-			eipNoExitsZoneName := ""
-			for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-				eip := cluster.GetCloudResourceByTagsSingle(ResourceType_ELASTIC_IP, AwsTagKeyZone, az.Name)
-				if eip == nil {
-					eipNoExitsZoneName = az.Name
-					break
-				}
-			}
-			if eipNoExitsZoneName == "" {
-				continue
-			}
-			tags[AwsTagKeyZone] = eipNoExitsZoneName
-			tags[AwsTagKeyName] = a.getEipName(cluster.Name, eipNoExitsZoneName)
-			a.createTags(ctx, aws.ToString(eip.AllocationId), ResourceType_ELASTIC_IP, tags)
+		if eipNoExitsZoneName == "" {
+			continue
 		}
+		tags[ResourceTypeKeyValue_ZONE] = eipNoExitsZoneName
+		tags[ResourceTypeKeyValue_NAME] = a.getEipName(cluster.Name, eipNoExitsZoneName)
+		a.createTags(ctx, aws.ToString(eip.AllocationId), ResourceType_ELASTIC_IP, tags)
 		cluster.AddCloudResource(&CloudResource{
 			RefId: aws.ToString(eip.AllocationId),
 			Name:  name,
@@ -1542,10 +1457,9 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			continue
 		}
 		eipName := a.getEipName(cluster.Name, az.Name)
-		eipTags := map[string]string{AwsTagKeyName: eipName, AwsTagKeyZone: az.Name}
-		if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, AwsTagKeyName, eipName) == nil {
+		eipTags := map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: eipName, ResourceTypeKeyValue_ZONE: az.Name}
+		if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: eipName}) == nil {
 			eipOutput, err := a.ec2Client.AllocateAddress(ctx, &ec2.AllocateAddressInput{
-				DryRun: aws.Bool(a.dryRun),
 				Domain: ec2Types.DomainTypeVpc,
 				TagSpecifications: []ec2Types.TagSpecification{
 					{
@@ -1554,7 +1468,7 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 					},
 				},
 			})
-			if err := a.handlerError(err); err != nil {
+			if err != nil {
 				return errors.Wrap(err, "failed to allocate Elastic IP")
 			}
 			eipCloudResource := &CloudResource{
@@ -1562,13 +1476,8 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 				Tags: cluster.EncodeTags(eipTags),
 				Type: ResourceType_ELASTIC_IP,
 			}
-			if a.dryRun {
-				eipCloudResource.RefId = uuid.New().String()
-				eipCloudResource.Value = "0.0.0.0"
-			} else {
-				eipCloudResource.RefId = aws.ToString(eipOutput.AllocationId)
-				eipCloudResource.Value = aws.ToString(eipOutput.PublicIp)
-			}
+			eipCloudResource.RefId = aws.ToString(eipOutput.AllocationId)
+			eipCloudResource.Value = aws.ToString(eipOutput.PublicIp)
 			cluster.AddCloudResource(eipCloudResource)
 			a.log.Infof("elastic ip %s allocated", eipName)
 		}
@@ -1583,23 +1492,24 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 		}
 
 		// Create NAT Gateway
-		natGatewayTags := map[string]string{
-			AwsTagKeyName: natGatewayName,
-			AwsTagKeyType: AwsResourcePublic,
-			AwsTagKeyZone: az.Name,
-		}
+		natGatewayTags := GetTags()
+		natGatewayTags[ResourceTypeKeyValue_ZONE] = az.Name
+		natGatewayTags[ResourceTypeKeyValue_NAME] = natGatewayName
+		natGatewayTags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
 		// eip
-		eip := cluster.GetCloudResourceByTagsSingle(ResourceType_ELASTIC_IP, AwsTagKeyZone, az.Name)
+		eip := cluster.GetCloudResourceByTagsSingle(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE: az.Name})
 		if eip == nil {
 			return errors.New("no Elastic IP found for AZ " + az.Name)
 		}
 		// public subnet
-		publickSubnet := cluster.GetCloudResourceByTagsSingle(ResourceType_SUBNET, AwsTagKeyZone, az.Name, AwsTagKeyType, AwsResourcePublic)
+		publickSubnet := cluster.GetCloudResourceByTagsSingle(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{
+			ResourceTypeKeyValue_ZONE:   az.Name,
+			ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PUBLIC,
+		})
 		if publickSubnet == nil {
 			return errors.New("no public subnet found for AZ " + az.Name)
 		}
 		natGatewayOutput, err := a.ec2Client.CreateNatGateway(ctx, &ec2.CreateNatGatewayInput{
-			DryRun:           aws.Bool(a.dryRun),
 			AllocationId:     aws.String(eip.RefId),
 			SubnetId:         aws.String(publickSubnet.RefId),
 			ConnectivityType: ec2Types.ConnectivityTypePublic,
@@ -1610,7 +1520,7 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 				},
 			},
 		})
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return errors.Wrap(err, "failed to create NAT Gateway")
 		}
 		natGateWayCloudResource := &CloudResource{
@@ -1618,12 +1528,8 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			Tags: cluster.EncodeTags(natGatewayTags),
 			Type: ResourceType_NAT_GATEWAY,
 		}
-		if a.dryRun {
-			natGateWayCloudResource.RefId = uuid.New().String()
-		} else {
-			natGateWayCloudResource.RefId = aws.ToString(natGatewayOutput.NatGateway.NatGatewayId)
-			natGateWayIds = append(natGateWayIds, natGateWayCloudResource.RefId)
-		}
+		natGateWayCloudResource.RefId = aws.ToString(natGatewayOutput.NatGateway.NatGatewayId)
+		natGateWayIds = append(natGateWayIds, natGateWayCloudResource.RefId)
 		cluster.AddCloudResource(natGateWayCloudResource)
 		a.log.Infof("nat gateway %s createing...", natGatewayName)
 	}
@@ -1667,6 +1573,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		nextToken = aws.ToString(routeTableRes.NextToken)
 	}
 
+	// Check existing route tables
 	for _, routeTableResource := range cluster.GetCloudResource(ResourceType_ROUTE_TABLE) {
 		routeTableResourceExits := false
 		for _, routeTable := range routeTables {
@@ -1680,54 +1587,14 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		}
 	}
 
-	for _, routeTable := range routeTables {
-		if cluster.GetCloudResourceByRefID(ResourceType_ROUTE_TABLE, aws.ToString(routeTable.RouteTableId)) != nil {
-			a.log.Infof("route table %s already exists", aws.ToString(routeTable.RouteTableId))
-			continue
-		}
-		name := ""
-		tags := make(map[string]string)
-		for _, tag := range routeTable.Tags {
-			if aws.ToString(tag.Key) == AwsTagKeyName {
-				name = aws.ToString(tag.Value)
-			}
-			tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
-		if val, ok := tags[AwsTagKeyType]; !ok || (val != AwsResourcePublic && val != AwsResourcePrivate) {
-			continue
-		}
-		if tags[AwsTagKeyType] == AwsResourcePublic && name != fmt.Sprintf("%s-public-rt", cluster.Name) {
-			continue
-		}
-		if tags[AwsTagKeyType] == AwsResourcePrivate {
-			privateZoneName, ok := tags[AwsTagKeyZone]
-			if !ok {
-				continue
-			}
-			if name != fmt.Sprintf("%s-private-rt-%s", cluster.Name, privateZoneName) {
-				continue
-			}
-		}
-		cluster.AddCloudResource(&CloudResource{
-			Name:         name,
-			RefId:        aws.ToString(routeTable.RouteTableId),
-			Tags:         cluster.EncodeTags(tags),
-			AssociatedId: vpc.RefId,
-			Type:         ResourceType_ROUTE_TABLE,
-		})
-		a.log.Infof("route table %s already exists", aws.ToString(routeTable.RouteTableId))
-	}
-
 	// Create public route table
 	publicRouteTableName := fmt.Sprintf("%s-public-rt", cluster.Name)
-	publicRouteTableNameTags := map[string]string{
-		AwsTagKeyName: publicRouteTableName,
-		AwsTagKeyType: AwsResourcePublic,
-	}
+	publicRouteTableNameTags := GetTags()
+	publicRouteTableNameTags[ResourceTypeKeyValue_NAME] = publicRouteTableName
+	publicRouteTableNameTags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
 	if cluster.GetCloudResourceByName(ResourceType_ROUTE_TABLE, publicRouteTableName) == nil {
 		publicRouteTable, err := a.ec2Client.CreateRouteTable(ctx, &ec2.CreateRouteTableInput{
-			DryRun: aws.Bool(a.dryRun),
-			VpcId:  aws.String(vpc.RefId),
+			VpcId: aws.String(vpc.RefId),
 			TagSpecifications: []ec2Types.TagSpecification{
 				{
 					ResourceType: ec2Types.ResourceTypeRouteTable,
@@ -1735,7 +1602,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 				},
 			},
 		})
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return errors.Wrap(err, "failed to create public route table")
 		}
 		publicRouteTableResource := &CloudResource{
@@ -1744,33 +1611,28 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 			AssociatedId: vpc.RefId,
 			Type:         ResourceType_ROUTE_TABLE,
 		}
-		if a.dryRun {
-			publicRouteTableResource.RefId = uuid.New().String()
-		} else {
-			publicRouteTableResource.RefId = aws.ToString(publicRouteTable.RouteTable.RouteTableId)
-		}
+		publicRouteTableResource.RefId = aws.ToString(publicRouteTable.RouteTable.RouteTableId)
 		cluster.AddCloudResource(publicRouteTableResource)
 		a.log.Infof("public route table %s created", publicRouteTableName)
 
 		// Add route to Internet Gateway in public route table
 		_, err = a.ec2Client.CreateRoute(ctx, &ec2.CreateRouteInput{
-			DryRun:               aws.Bool(a.dryRun),
 			RouteTableId:         aws.String(publicRouteTableResource.RefId),
 			DestinationCidrBlock: aws.String("0.0.0.0/0"),
 			GatewayId:            aws.String(cluster.GetSingleCloudResource(ResourceType_INTERNET_GATEWAY).RefId),
 		})
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return errors.Wrap(err, "failed to add route to Internet Gateway")
 		}
 
 		// Associate public subnets with public route table
-		for i, publicSubnetReource := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, AwsTagKeyType, AwsResourcePublic) {
+		for i, publicSubnetReource := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{
+			ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PUBLIC}) {
 			publicAssociateRouteTable, err := a.ec2Client.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
-				DryRun:       aws.Bool(a.dryRun),
 				RouteTableId: aws.String(publicRouteTableResource.RefId),
 				SubnetId:     aws.String(publicSubnetReource.RefId),
 			})
-			if err := a.handlerError(err); err != nil {
+			if err != nil {
 				return errors.Wrap(err, "failed to associate public subnet with route table")
 			}
 			parent := cluster.GetCloudResourceByRefID(ResourceType_ROUTE_TABLE, publicRouteTableResource.RefId)
@@ -1779,11 +1641,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 				Type:         ResourceType_ROUTE_TABLE,
 				AssociatedId: publicRouteTableResource.RefId,
 			}
-			if a.dryRun {
-				publicAssociateRouteTableResource.RefId = uuid.New().String()
-			} else {
-				publicAssociateRouteTableResource.RefId = aws.ToString(publicAssociateRouteTable.AssociationId)
-			}
+			publicAssociateRouteTableResource.RefId = aws.ToString(publicAssociateRouteTable.AssociationId)
 			cluster.AddSubCloudResource(ResourceType_ROUTE_TABLE, parent.Id, publicAssociateRouteTableResource)
 		}
 	}
@@ -1791,17 +1649,15 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 	// Create private route tables (one per AZ)
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
 		privateRouteTableName := fmt.Sprintf("%s-private-rt-%s", cluster.Name, az.Name)
-		tags := map[string]string{
-			AwsTagKeyName: privateRouteTableName,
-			AwsTagKeyType: AwsResourcePrivate,
-			AwsTagKeyZone: az.Name,
-		}
-		if cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, AwsTagKeyName, privateRouteTableName) != nil {
+		tags := GetTags()
+		tags[ResourceTypeKeyValue_NAME] = privateRouteTableName
+		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
+		tags[ResourceTypeKeyValue_ZONE] = az.Name
+		if cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: privateRouteTableName}) != nil {
 			continue
 		}
 		privateRouteTable, err := a.ec2Client.CreateRouteTable(ctx, &ec2.CreateRouteTableInput{
-			DryRun: aws.Bool(a.dryRun),
-			VpcId:  aws.String(cluster.GetSingleCloudResource(ResourceType_VPC).RefId),
+			VpcId: aws.String(cluster.GetSingleCloudResource(ResourceType_VPC).RefId),
 			TagSpecifications: []ec2Types.TagSpecification{
 				{
 					ResourceType: ec2Types.ResourceTypeRouteTable,
@@ -1809,7 +1665,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 				},
 			},
 		})
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return errors.Wrap(err, "failed to create private route table for AZ "+az.Name)
 		}
 		privateRouteTableCloudResource := &CloudResource{
@@ -1818,34 +1674,31 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 			Type:         ResourceType_ROUTE_TABLE,
 			AssociatedId: vpc.RefId,
 		}
-		if a.dryRun {
-			privateRouteTableCloudResource.RefId = uuid.New().String()
-		} else {
-			privateRouteTableCloudResource.RefId = aws.ToString(privateRouteTable.RouteTable.RouteTableId)
-		}
+		privateRouteTableCloudResource.RefId = aws.ToString(privateRouteTable.RouteTable.RouteTableId)
 		cluster.AddCloudResource(privateRouteTableCloudResource)
 		a.log.Infof("private route table %s created for AZ %s", privateRouteTableName, az.Name)
 		// Add route to NAT Gateway in private route table
-		for _, natGateway := range cluster.GetCloudResourceByTags(ResourceType_NAT_GATEWAY, AwsTagKeyZone, az.Name) {
+		for _, natGateway := range cluster.GetCloudResourceByTags(ResourceType_NAT_GATEWAY, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE: az.Name}) {
 			_, err = a.ec2Client.CreateRoute(ctx, &ec2.CreateRouteInput{
-				DryRun:               aws.Bool(a.dryRun),
 				RouteTableId:         aws.String(privateRouteTableCloudResource.RefId),
 				DestinationCidrBlock: aws.String("0.0.0.0/0"),
 				NatGatewayId:         aws.String(natGateway.RefId),
 			})
-			if err := a.handlerError(err); err != nil {
+			if err != nil {
 				return errors.Wrap(err, "failed to add route to NAT Gateway for AZ "+az.Name)
 			}
 		}
 
 		// Associate private subnets with private route table
-		for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, AwsTagKeyType, AwsResourcePrivate, AwsTagKeyZone, az.Name) {
+		searchTags := GetTags()
+		searchTags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
+		searchTags[ResourceTypeKeyValue_ZONE] = az.Name
+		for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, searchTags) {
 			privateAssociateRouteTable, err := a.ec2Client.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
-				DryRun:       aws.Bool(a.dryRun),
 				RouteTableId: aws.String(privateRouteTableCloudResource.RefId),
 				SubnetId:     aws.String(subnet.RefId),
 			})
-			if err := a.handlerError(err); err != nil {
+			if err != nil {
 				return errors.Wrap(err, "failed to associate private subnet with route table in AZ "+az.Name)
 			}
 			parent := cluster.GetCloudResourceByRefID(ResourceType_ROUTE_TABLE, privateRouteTableCloudResource.RefId)
@@ -1854,11 +1707,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 				Type:         ResourceType_ROUTE_TABLE,
 				AssociatedId: privateRouteTableCloudResource.RefId,
 			}
-			if a.dryRun {
-				privateAssociateRouteTableCloudResource.RefId = uuid.New().String()
-			} else {
-				privateAssociateRouteTableCloudResource.RefId = aws.ToString(privateAssociateRouteTable.AssociationId)
-			}
+			privateAssociateRouteTableCloudResource.RefId = aws.ToString(privateAssociateRouteTable.AssociationId)
 			cluster.AddSubCloudResource(ResourceType_ROUTE_TABLE, parent.Id, privateAssociateRouteTableCloudResource)
 		}
 	}
@@ -1872,8 +1721,8 @@ func (a *AwsCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 		return errors.New("vpc not found")
 	}
 	sgNames := []string{
-		fmt.Sprintf("%s-%s-sg", cluster.Name, AwsResourceHttpSG),
-		fmt.Sprintf("%s-%s-sg", cluster.Name, AwsReousrceBostionHostSG),
+		fmt.Sprintf("%s-%s-sg", cluster.Name, ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER.String()),
+		fmt.Sprintf("%s-%s-sg", cluster.Name, ResourceTypeKeyValue_SECURITY_GROUP_TYPE_BOSTION.String()),
 	}
 	securityGroups := make([]ec2Types.SecurityGroup, 0)
 	nextToken := ""
@@ -1911,41 +1760,19 @@ func (a *AwsCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 		}
 	}
 
-	for _, securityGroup := range securityGroups {
-		if cluster.GetCloudResourceByRefID(ResourceType_SECURITY_GROUP, aws.ToString(securityGroup.GroupId)) != nil {
-			a.log.Infof("security group %s already exists", aws.ToString(securityGroup.GroupId))
-			continue
-		}
-		if utils.InArray(aws.ToString(securityGroup.GroupName), sgNames) {
-			continue
-		}
-		tags := make(map[string]string)
-		for _, tag := range securityGroup.Tags {
-			tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-		}
-		cluster.AddCloudResource(&CloudResource{
-			Name:         aws.ToString(securityGroup.GroupName),
-			RefId:        aws.ToString(securityGroup.GroupId),
-			Tags:         cluster.EncodeTags(tags),
-			AssociatedId: vpc.RefId,
-			Type:         ResourceType_SECURITY_GROUP,
-		})
-		a.log.Infof("security group %s already exists", aws.ToString(securityGroup.GroupId))
-	}
-
 	for _, sgName := range sgNames {
 		if cluster.GetCloudResourceByName(ResourceType_SECURITY_GROUP, sgName) != nil {
 			continue
 		}
-		tags := map[string]string{AwsTagKeyName: sgName}
-		if strings.Contains(sgName, AwsResourceHttpSG) {
-			tags[AwsTagKeyType] = AwsResourceHttpSG
+		tags := GetTags()
+		tags[ResourceTypeKeyValue_NAME] = sgName
+		if strings.Contains(sgName, ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER.String()) {
+			tags[ResourceTypeKeyValue_SECURITY_GROUP_TYPE] = ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER
 		}
-		if strings.Contains(sgName, AwsReousrceBostionHostSG) {
-			tags[AwsTagKeyType] = AwsReousrceBostionHostSG
+		if strings.Contains(sgName, ResourceTypeKeyValue_SECURITY_GROUP_TYPE_BOSTION.String()) {
+			tags[ResourceTypeKeyValue_SECURITY_GROUP_TYPE] = ResourceTypeKeyValue_SECURITY_GROUP_TYPE_BOSTION
 		}
 		sgOutput, err := a.ec2Client.CreateSecurityGroup(ctx, &ec2.CreateSecurityGroupInput{
-			DryRun:      aws.Bool(a.dryRun),
 			GroupName:   aws.String(sgName),
 			VpcId:       aws.String(vpc.RefId),
 			Description: aws.String(sgName),
@@ -1956,7 +1783,7 @@ func (a *AwsCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 				},
 			},
 		})
-		if err := a.handlerError(err); err != nil {
+		if err != nil {
 			return errors.Wrap(err, "failed to create security group")
 		}
 		sgCloudResource := &CloudResource{
@@ -1965,11 +1792,7 @@ func (a *AwsCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 			Type:         ResourceType_SECURITY_GROUP,
 			AssociatedId: vpc.RefId,
 		}
-		if a.dryRun {
-			sgCloudResource.RefId = uuid.New().String()
-		} else {
-			sgCloudResource.RefId = aws.ToString(sgOutput.GroupId)
-		}
+		sgCloudResource.RefId = aws.ToString(sgOutput.GroupId)
 		cluster.AddCloudResource(sgCloudResource)
 		a.log.Infof("security group %s created", sgName)
 
@@ -1982,9 +1805,8 @@ func (a *AwsCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 				IpRanges:   []ec2Types.IpRange{{CidrIp: aws.String(sg.IpCidr)}},
 			})
 		}
-		if v, ok := tags[AwsTagKeyType]; ok && v == AwsReousrceBostionHostSG {
+		if v, ok := tags[ResourceTypeKeyValue_SECURITY_GROUP_TYPE]; ok && v == ResourceTypeKeyValue_SECURITY_GROUP_TYPE_BOSTION {
 			_, err = a.ec2Client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
-				DryRun:        aws.Bool(a.dryRun),
 				GroupId:       aws.String(sgCloudResource.RefId),
 				IpPermissions: ipPermissionsArr,
 				TagSpecifications: []ec2Types.TagSpecification{
@@ -1994,13 +1816,12 @@ func (a *AwsCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 					},
 				},
 			})
-			if err := a.handlerError(err); err != nil {
+			if err != nil {
 				return errors.Wrap(err, "failed to add inbound rules to security group")
 			}
 		}
-		if v, ok := tags[AwsTagKeyType]; ok && v == AwsResourceHttpSG {
+		if v, ok := tags[ResourceTypeKeyValue_SECURITY_GROUP_TYPE]; ok && v == ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER {
 			_, err = a.ec2Client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
-				DryRun:  aws.Bool(a.dryRun),
 				GroupId: aws.String(sgCloudResource.RefId),
 				IpPermissions: []ec2Types.IpPermission{
 					{
@@ -2023,7 +1844,7 @@ func (a *AwsCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 					},
 				},
 			})
-			if err := a.handlerError(err); err != nil {
+			if err != nil {
 				return errors.Wrap(err, "failed to add inbound rules to security group")
 			}
 		}
@@ -2036,7 +1857,7 @@ func (a *AwsCloudUsecase) CreateS3Endpoint(ctx context.Context, cluster *Cluster
 	if vpc == nil {
 		return errors.New("vpc not found")
 	}
-	privateRouterTable := cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, AwsTagKeyType, AwsResourcePrivate)
+	privateRouterTable := cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PRIVATE})
 	if len(privateRouterTable) == 0 {
 		return errors.New("public route table not found")
 	}
@@ -2047,10 +1868,8 @@ func (a *AwsCloudUsecase) CreateS3Endpoint(ctx context.Context, cluster *Cluster
 
 	// s3 gateway
 	name := fmt.Sprintf("%s-s3-endpoint", cluster.Name)
-	tags := map[string]string{
-		AwsTagKeyName: name,
-		AwsTagKeyVpc:  vpc.RefId,
-	}
+	tags := GetTags()
+	tags[ResourceTypeKeyValue_NAME] = name
 	serviceNmae := fmt.Sprintf("com.amazonaws.%s.s3", cluster.Region)
 	vpcEndPoints := make([]ec2Types.VpcEndpoint, 0)
 	nextToken := ""
@@ -2105,7 +1924,6 @@ func (a *AwsCloudUsecase) CreateS3Endpoint(ctx context.Context, cluster *Cluster
 		return nil
 	}
 	s3enpointoutput, err := a.ec2Client.CreateVpcEndpoint(ctx, &ec2.CreateVpcEndpointInput{
-		DryRun:          aws.Bool(a.dryRun),
 		VpcId:           aws.String(vpc.RefId),
 		ServiceName:     aws.String(serviceNmae), // com.amazonaws.us-east-1.s3
 		VpcEndpointType: ec2Types.VpcEndpointTypeGateway,
@@ -2118,7 +1936,7 @@ func (a *AwsCloudUsecase) CreateS3Endpoint(ctx context.Context, cluster *Cluster
 			},
 		},
 	})
-	if err := a.handlerError(err); err != nil {
+	if err != nil {
 		return errors.Wrap(err, "failed to create s3 endpoint")
 	}
 	s3enpointoutputCloudResource := &CloudResource{
@@ -2126,11 +1944,7 @@ func (a *AwsCloudUsecase) CreateS3Endpoint(ctx context.Context, cluster *Cluster
 		Tags: cluster.EncodeTags(tags),
 		Type: ResourceType_VPC_ENDPOINT_S3,
 	}
-	if a.dryRun {
-		s3enpointoutputCloudResource.RefId = uuid.New().String()
-	} else {
-		s3enpointoutputCloudResource.RefId = aws.ToString(s3enpointoutput.VpcEndpoint.VpcEndpointId)
-	}
+	s3enpointoutputCloudResource.RefId = aws.ToString(s3enpointoutput.VpcEndpoint.VpcEndpointId)
 	cluster.AddCloudResource(s3enpointoutputCloudResource)
 	a.log.Infof("s3 endpoint %s created", name)
 	return nil
@@ -2144,14 +1958,14 @@ func (a *AwsCloudUsecase) CreateSLB(ctx context.Context, cluster *Cluster) error
 	}
 	name := fmt.Sprintf("%s-slb", cluster.Name)
 	publicSubnetIDs := make([]string, 0)
-	for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, AwsTagKeyType, AwsResourcePublic) {
+	for _, subnet := range cluster.GetCloudResourceByTags(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PUBLIC}) {
 		publicSubnetIDs = append(publicSubnetIDs, subnet.RefId)
 	}
 	if len(publicSubnetIDs) == 0 {
 		return errors.New("failed to get public subnets")
 	}
 	sgIDs := make([]string, 0)
-	for _, sg := range cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, AwsTagKeyType, AwsResourceHttpSG) {
+	for _, sg := range cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_SECURITY_GROUP_TYPE: ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER}) {
 		sgIDs = append(sgIDs, sg.RefId)
 	}
 	if len(sgIDs) == 0 {
@@ -2196,7 +2010,8 @@ func (a *AwsCloudUsecase) CreateSLB(ctx context.Context, cluster *Cluster) error
 	}
 
 	// Create SLB
-	tags := map[string]string{AwsTagKeyName: name}
+	tags := GetTags()
+	tags[ResourceTypeKeyValue_NAME] = name
 	slbOutput, err := a.elbv2Client.CreateLoadBalancer(ctx, &elasticloadbalancingv2.CreateLoadBalancerInput{
 		Name:           aws.String(name),
 		Subnets:        publicSubnetIDs,
@@ -2478,47 +2293,32 @@ func (a *AwsCloudUsecase) getInstances(ctx context.Context, vpcCloudResource *Cl
 	return instances, nil
 }
 
-func (a *AwsCloudUsecase) distributeNodeSubnets(cluster *Cluster, nodeIndex int) (subNetID string) {
-	subnets := cluster.GetCloudResource(ResourceType_SUBNET)
-	if len(subnets) == 0 {
-		return ""
-	}
-	nodeSize := len(cluster.Nodes)
-	subnetsSize := len(subnets)
-	if nodeSize <= subnetsSize {
-		return subnets[nodeIndex%subnetsSize].RefId
-	}
-	interval := nodeSize / subnetsSize
-	return subnets[(nodeIndex/interval)%subnetsSize].RefId
-}
-
 // create Tags
-func (a *AwsCloudUsecase) createTags(ctx context.Context, resourceID string, resourceType ResourceType, tags map[string]string) error {
+func (a *AwsCloudUsecase) createTags(ctx context.Context, resourceID string, resourceType ResourceType, tags map[ResourceTypeKeyValue]any) error {
 	_, err := a.ec2Client.CreateTags(ctx, &ec2.CreateTagsInput{
-		DryRun:    aws.Bool(a.dryRun),
 		Resources: []string{resourceID},
 		Tags:      a.mapToEc2Tags(tags),
 	})
-	if err := a.handlerError(err); err != nil {
+	if err != nil {
 		return errors.Wrapf(err, "failed to create tags for %s", resourceType.String())
 	}
 	return nil
 }
 
 // map to ec2 tags
-func (a *AwsCloudUsecase) mapToEc2Tags(tags map[string]string) []ec2Types.Tag {
+func (a *AwsCloudUsecase) mapToEc2Tags(tags map[ResourceTypeKeyValue]any) []ec2Types.Tag {
 	ec2Tags := []ec2Types.Tag{}
 	for key, value := range tags {
-		ec2Tags = append(ec2Tags, ec2Types.Tag{Key: aws.String(key), Value: aws.String(value)})
+		ec2Tags = append(ec2Tags, ec2Types.Tag{Key: aws.String(key.String()), Value: aws.String(cast.ToString(value))})
 	}
 	return ec2Tags
 }
 
 // map to elbv2 tags
-func (a *AwsCloudUsecase) mapToElbv2Tags(tags map[string]string) []elasticloadbalancingv2Types.Tag {
+func (a *AwsCloudUsecase) mapToElbv2Tags(tags map[ResourceTypeKeyValue]any) []elasticloadbalancingv2Types.Tag {
 	elbv2Tags := []elasticloadbalancingv2Types.Tag{}
 	for key, value := range tags {
-		elbv2Tags = append(elbv2Tags, elasticloadbalancingv2Types.Tag{Key: aws.String(key), Value: aws.String(value)})
+		elbv2Tags = append(elbv2Tags, elasticloadbalancingv2Types.Tag{Key: aws.String(key.String()), Value: aws.String(cast.ToString(value))})
 	}
 	return elbv2Tags
 }
@@ -2569,52 +2369,10 @@ func (a *AwsCloudUsecase) determineUsername(amiName, amiDescription string) stri
 	return "ec2-user"
 }
 
-func (a *AwsCloudUsecase) handlerError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if e, ok := err.(*smithy.OperationError); ok {
-		a.log.Infof("%s test is passed", e.Operation())
-		return nil
-	}
-	return err
-}
-
 func (a *AwsCloudUsecase) getNatgatewayName(clusterName, zoneName string) string {
 	return fmt.Sprintf("%s-nat-gateway-%s", clusterName, zoneName)
 }
 
 func (a *AwsCloudUsecase) getEipName(clusterName, zoneName string) string {
 	return fmt.Sprintf("%s-eip-%s", clusterName, zoneName)
-}
-
-// check tags
-func (a *AwsCloudUsecase) checkTags(tags map[string]string, cloudTags []ec2Types.Tag) (map[string]string, bool) {
-	data := make(map[string]string)
-	for _, tag := range cloudTags {
-		data[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
-	}
-	for key, value := range tags {
-		data[key] = value
-	}
-	if len(tags) != len(cloudTags) {
-		return data, true
-	}
-	for _, tag := range cloudTags {
-		if _, ok := tags[aws.ToString(tag.Key)]; !ok {
-			return data, true
-		}
-		if tags[aws.ToString(tag.Key)] != aws.ToString(tag.Value) {
-			return data, true
-		}
-	}
-	for key, value := range tags {
-		if _, ok := data[key]; !ok {
-			return data, true
-		}
-		if data[key] != value {
-			return data, true
-		}
-	}
-	return data, false
 }

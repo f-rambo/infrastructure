@@ -5,7 +5,6 @@ package biz.cluster;
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/f-rambo/cloud-copilot/infrastructure/internal/biz;";
-
 enum ClusterStatus {
       UNSPECIFIED = 0;
       RUNNING = 1;
@@ -15,18 +14,20 @@ enum ClusterStatus {
 }
 
 enum ClusterType {
-      LOCAL = 0;
-      AWS_EC2 = 1;
-      AWS_EKS = 2;
-      ALICLOUD_ECS = 3;
-      ALICLOUD_AKS = 4;
-      GCP_GKE = 5;
+      ClusterType_UNSPECIFIED = 0;
+      LOCAL = 1;
+      AWS_EC2 = 2;
+      AWS_EKS = 3;
+      ALICLOUD_ECS = 4;
+      ALICLOUD_AKS = 5;
+      GCP_GKE = 6;
 }
 
 enum ClusterLevel {
-      BASIC = 0;
-      STANDARD = 1;
-      ADVANCED = 2;
+      ClusterLevel_UNSPECIFIED = 0;
+      BASIC = 1;
+      STANDARD = 2;
+      ADVANCED = 3;
 }
 
 message Cluster {
@@ -66,27 +67,30 @@ message Cluster {
 }
 
 enum NodeRole {
-      MASTER = 0;
-      WORKER = 1;
-      EDGE = 2;
+      NodeRole_UNSPECIFIED = 0;
+      MASTER = 1;
+      WORKER = 2;
+      EDGE = 3;
 }
 
 enum NodeStatus {
-      NODE_UNSPECIFIED = 0;
-      NODE_RUNNING = 1;
-      NODE_CREATING = 2;
-      NODE_DELETING = 3;
-      NODE_DELETED = 4;
-      NODE_ERROR = 5;
-      NODE_PENDING = 6;
+      NodeStatus_UNSPECIFIED = 0;
+      NODE_UNSPECIFIED = 1;
+      NODE_RUNNING = 2;
+      NODE_CREATING = 3;
+      NODE_DELETING = 4;
+      NODE_DELETED = 5;
+      NODE_ERROR = 6;
+      NODE_PENDING = 7;
 }
 
 enum NodeGroupType {
-      NORMAL = 0;
-      HIGH_COMPUTATION = 1;
-      GPU_ACCELERATERD = 2;
-      HIGH_MEMORY = 3;
-      LARGE_HARD_DISK = 4;
+      NodeGroupType_UNSPECIFIED = 0;
+      NORMAL = 1;
+      HIGH_COMPUTATION = 2;
+      GPU_ACCELERATERD = 3;
+      HIGH_MEMORY = 4;
+      LARGE_HARD_DISK = 5;
 }
 
 message Node {
@@ -172,6 +176,19 @@ enum ResourceType {
       VPC_ENDPOINT_S3 = 11;
       DATA_DEVICE = 12;
       INSTANCE_TYPE = 13;
+}
+
+enum ResourceTypeKeyValue {
+      ResourceTypeKeyValue_UNSPECIFIED = 0;
+      NAME = 1;
+      ACCESS = 2;
+      ZONE = 3;
+      SECURITY_GROUP_TYPE = 4;
+      VPC_REFID = 5;
+      ACCESS_PRIVATE = 6;
+      ACCESS_PUBLIC = 7;
+      SECURITY_GROUP_TYPE_CLUSTER = 8;
+      SECURITY_GROUP_TYPE_BOSTION = 9;
 }
 
 message CloudResource {

@@ -454,7 +454,7 @@ func (g *GoogleCloudUsecase) createVPC(_ context.Context, cluster *Cluster) erro
 		Name:  network.Name,
 		RefId: network.SelfLink,
 		Type:  ResourceType_VPC,
-		Tags:  cluster.EncodeTags(map[string]string{"Name": network.Name}),
+		// Tags:  cluster.EncodeTags(map[string]string{"Name": network.Name}),
 	})
 
 	g.log.Infof("VPC %s created successfully with ID %s", network.Name, network.Id)
@@ -526,11 +526,11 @@ func (g *GoogleCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster
 				Name:  name,
 				RefId: subnet.Name,
 				Type:  ResourceType_SUBNET,
-				Tags: cluster.EncodeTags(map[string]string{
-					"Name": name,
-					"Type": "private",
-					"Zone": az.Name,
-				}),
+				// Tags: cluster.EncodeTags(map[string]string{
+				// 	"Name": name,
+				// 	"Type": "private",
+				// 	"Zone": az.Name,
+				// }),
 			})
 			g.log.Infof("private subnet %s created", name)
 			cidrIndex++
@@ -564,11 +564,11 @@ func (g *GoogleCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster
 			Name:  name,
 			RefId: subnet.Name,
 			Type:  ResourceType_SUBNET,
-			Tags: cluster.EncodeTags(map[string]string{
-				"Name": name,
-				"Type": "public",
-				"Zone": az.Name,
-			}),
+			// Tags: cluster.EncodeTags(map[string]string{
+			// 	"Name": name,
+			// 	"Type": "public",
+			// 	"Zone": az.Name,
+			// }),
 		})
 		g.log.Infof("public subnet %s created", name)
 		cidrIndex++
@@ -640,10 +640,10 @@ func (g *GoogleCloudUsecase) createNatGateways(ctx context.Context, cluster *Clu
 			Name:  natName,
 			RefId: natName,
 			Type:  ResourceType_NAT_GATEWAY,
-			Tags: cluster.EncodeTags(map[string]string{
-				"Name": natName,
-				"Zone": az.Name,
-			}),
+			// Tags: cluster.EncodeTags(map[string]string{
+			// 	"Name": natName,
+			// 	"Zone": az.Name,
+			// }),
 		})
 		g.log.Infof("Cloud NAT %s created", natName)
 	}
@@ -696,11 +696,11 @@ func (g *GoogleCloudUsecase) createRouteTables(ctx context.Context, cluster *Clu
 				Name:  privateRouteName,
 				RefId: privateRouteName,
 				Type:  ResourceType_ROUTE_TABLE,
-				Tags: cluster.EncodeTags(map[string]string{
-					"Name": privateRouteName,
-					"Type": "private",
-					"Zone": az.Name,
-				}),
+				// Tags: cluster.EncodeTags(map[string]string{
+				// 	"Name": privateRouteName,
+				// 	"Type": "private",
+				// 	"Zone": az.Name,
+				// }),
 			})
 			g.log.Infof("private route %s created", privateRouteName)
 		}
@@ -730,11 +730,11 @@ func (g *GoogleCloudUsecase) createRouteTables(ctx context.Context, cluster *Clu
 				Name:  publicRouteName,
 				RefId: publicRouteName,
 				Type:  ResourceType_ROUTE_TABLE,
-				Tags: cluster.EncodeTags(map[string]string{
-					"Name": publicRouteName,
-					"Type": "public",
-					"Zone": az.Name,
-				}),
+				// Tags: cluster.EncodeTags(map[string]string{
+				// 	"Name": publicRouteName,
+				// 	"Type": "public",
+				// 	"Zone": az.Name,
+				// }),
 			})
 			g.log.Infof("public route %s created", publicRouteName)
 		}
@@ -838,9 +838,9 @@ func (g *GoogleCloudUsecase) createSecurityGroup(ctx context.Context, cluster *C
 			Name:  rule.name,
 			RefId: rule.name,
 			Type:  ResourceType_SECURITY_GROUP,
-			Tags: cluster.EncodeTags(map[string]string{
-				"Name": rule.name,
-			}),
+			// Tags: cluster.EncodeTags(map[string]string{
+			// 	"Name": rule.name,
+			// }),
 		})
 		g.log.Infof("firewall rule %s created", rule.name)
 	}
