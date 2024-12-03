@@ -2,9 +2,8 @@ syntax = "proto3";
 
 package biz.cluster;
 
-import "google/protobuf/timestamp.proto";
-
 option go_package = "github.com/f-rambo/cloud-copilot/infrastructure/internal/biz;";
+
 enum ClusterStatus {
       UNSPECIFIED = 0;
       RUNNING = 1;
@@ -31,6 +30,8 @@ enum ClusterLevel {
 }
 
 message Cluster {
+      // @goimport: "gorm.io/gorm"
+      // @gofield: gorm.Model
       int64 id = 1; // @gotags: gorm:"column:id;primaryKey;AUTO_INCREMENT"
       string name = 2; // @gotags: gorm:"column:name; default:''; NOT NULL"
       string version = 3; // @gotags: gorm:"column:version; default:''; NOT NULL"
@@ -39,31 +40,28 @@ message Cluster {
       string addons = 6; // @gotags: gorm:"column:addons; default:''; NOT NULL"
       string addons_config = 7; // @gotags: gorm:"column:addons_config; default:''; NOT NULL"
       ClusterStatus status = 8; // @gotags: gorm:"column:status; default:0; NOT NULL"
-      ClusterType type = 9; // @gotags: gorm:"column:type; default:''; NOT NULL"
-      ClusterLevel level = 10; // @gotags: gorm:"column:level; default:''; NOT NULL"
+      ClusterType type = 9; // @gotags: gorm:"column:type; default:0; NOT NULL"
+      ClusterLevel level = 10; // @gotags: gorm:"column:level; default:0; NOT NULL"
       string public_key = 11; // @gotags: gorm:"column:public_key; default:''; NOT NULL"
       string private_key = 12; // @gotags: gorm:"column:private_key; default:''; NOT NULL"
       string connections = 13; // @gotags: gorm:"column:connections; default:''; NOT NULL"
       string certificate_authority = 14; // @gotags: gorm:"column:certificate_authority; default:''; NOT NULL"
       string region = 15; // @gotags: gorm:"column:region; default:''; NOT NULL"
       int64 user_id = 16; // @gotags: gorm:"column:user_id; default:0; NOT NULL"
-      string ip_cidr = 17; // @gotags: gorm:"column:ip_cidr; default:''; NOT NULL"
-      string access_id = 18; // @gotags: gorm:"column:access_id; default:''; NOT NULL"
-      string access_key = 19; // @gotags: gorm:"column:access_key; default:''; NOT NULL"
-      string master_ip = 20; // @gotags: gorm:"column:master_ip; default:''; NOT NULL"
-      string master_user = 21; // @gotags: gorm:"column:master_user; default:''; NOT NULL"
-      string token = 22; // @gotags: gorm:"column:token; default:''; NOT NULL"
-      string ca_data = 23; // @gotags: gorm:"column:ca_data; default:''; NOT NULL"
-      string cert_data = 24; // @gotags: gorm:"column:cert_data; default:''; NOT NULL"
-      string key_data = 25; // @gotags: gorm:"column:key_data; default:''; NOT NULL"
+      string access_id = 17; // @gotags: gorm:"column:access_id; default:''; NOT NULL"
+      string access_key = 18; // @gotags: gorm:"column:access_key; default:''; NOT NULL"
+      string master_ip = 19; // @gotags: gorm:"column:master_ip; default:''; NOT NULL"
+      string master_user = 20; // @gotags: gorm:"column:master_user; default:''; NOT NULL"
+      string token = 21; // @gotags: gorm:"column:token; default:''; NOT NULL"
+      string ca_data = 22; // @gotags: gorm:"column:ca_data; default:''; NOT NULL"
+      string cert_data = 23; // @gotags: gorm:"column:cert_data; default:''; NOT NULL"
+      string key_data = 24; // @gotags: gorm:"column:key_data; default:''; NOT NULL"
+      string cloud_cluster_id = 25; // @gotags: gorm:"column:cloud_cluster_id; default:''; NOT NULL"
       BostionHost bostion_host = 26; // @gotags: gorm:"-"
       repeated Node nodes = 27; // @gotags: gorm:"-"
       repeated NodeGroup node_groups = 28; // @gotags: gorm:"-"
       repeated CloudResource cloud_resources = 29; // @gotags: gorm:"-"
       repeated SecurityGroup security_groups = 30; // @gotags: gorm:"-"
-      google.protobuf.Timestamp created_at = 31; // @gotags: gorm:"column:created_at; default:CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp updated_at = 32; // @gotags: gorm:"column:updated_at; default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp deleted_at = 33; // @gotags: gorm:"column:deleted_at; default:NULL"
 }
 
 enum NodeRole {
@@ -94,24 +92,25 @@ enum NodeGroupType {
 }
 
 message Node {
+      // @goimport: "gorm.io/gorm"
+      // @gofield: gorm.Model
       int64 id = 1; // @gotags: gorm:"column:id;primaryKey;AUTO_INCREMENT"
       string name = 2; // @gotags: gorm:"column:name; default:''; NOT NULL"
       string labels = 3; // @gotags: gorm:"column:labels; default:''; NOT NULL"
       string internal_ip = 4; // @gotags: gorm:"column:internal_ip; default:''; NOT NULL"
       string external_ip = 5; // @gotags: gorm:"column:external_ip; default:''; NOT NULL"
       string user = 6; // @gotags: gorm:"column:user; default:''; NOT NULL"
-      NodeRole role = 7; // @gotags: gorm:"column:role; default:''; NOT NULL"
+      NodeRole role = 7; // @gotags: gorm:"column:role; default:0; NOT NULL"
       NodeStatus status = 8; // @gotags: gorm:"column:status; default:0; NOT NULL"
       int64 cluster_id = 9; // @gotags: gorm:"column:cluster_id; default:0; NOT NULL"
       string node_group_id = 10; // @gotags: gorm:"column:node_group_id; default:''; NOT NULL"
       string instance_id = 11; // @gotags: gorm:"column:instance_id; default:''; NOT NULL"
       string error_info = 12; // @gotags: gorm:"column:error_info; default:''; NOT NULL"
-      google.protobuf.Timestamp created_at = 13; // @gotags: gorm:"column:created_at; default:CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp updated_at = 14; // @gotags: gorm:"column:updated_at; default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp deleted_at = 15; // @gotags: gorm:"column:deleted_at; default:NULL"
 }
 
 message NodeGroup {
+      // @goimport: "gorm.io/gorm"
+      // @gofield: gorm.Model
       string id = 1; // @gotags: gorm:"column:id;primaryKey; NOT NULL"
       string name = 2; // @gotags: gorm:"column:name; default:''; NOT NULL"
       NodeGroupType type = 3; // @gotags: gorm:"column:type; default:0; NOT NULL"
@@ -138,9 +137,12 @@ message NodeGroup {
       string subnet_ip_cidr = 24; // @gotags: gorm:"column:subnet_ip_cidr; default:''; NOT NULL"
       string node_init_script = 25; // @gotags: gorm:"column:cloud_init_script; default:''; NOT NULL"
       int64 cluster_id = 26; // @gotags: gorm:"column:cluster_id; default:0; NOT NULL"
+      string cloud_node_group_id = 27; // @gotags: gorm:"column:cloud_node_group_id; default:''; NOT NULL"
 }
 
 message BostionHost {
+      // @goimport: "gorm.io/gorm"
+      // @gofield: gorm.Model
       string id = 1; // @gotags: gorm:"column:id;primaryKey; NOT NULL"
       string user = 2; // @gotags: gorm:"column:user; default:''; NOT NULL"
       string image = 3; // @gotags: gorm:"column:image; default:''; NOT NULL"
@@ -156,9 +158,6 @@ message BostionHost {
       NodeStatus status = 13; // @gotags: gorm:"column:status; default:0; NOT NULL"
       string instance_id = 14; // @gotags: gorm:"column:instance_id; default:''; NOT NULL"
       int64 cluster_id = 15; // @gotags: gorm:"column:cluster_id; default:0; NOT NULL"
-      google.protobuf.Timestamp created_at = 16; // @gotags: gorm:"column:created_at; default:CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp updated_at = 17; // @gotags: gorm:"column:updated_at; default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp deleted_at = 18; // @gotags: gorm:"column:deleted_at; default:NULL"
 }
 
 enum ResourceType {
@@ -192,6 +191,8 @@ enum ResourceTypeKeyValue {
 }
 
 message CloudResource {
+      // @goimport: "gorm.io/gorm"
+      // @gofield: gorm.Model
       string id = 1; // @gotags: gorm:"column:id;primaryKey; NOT NULL"
       string name = 2; // @gotags: gorm:"column:name; default:''; NOT NULL"
       string ref_id = 3; // @gotags: gorm:"column:ref_id; default:''; NOT NULL"
@@ -199,13 +200,12 @@ message CloudResource {
       ResourceType type = 5; // @gotags: gorm:"column:type; default:0; NOT NULL"
       string tags = 6; // @gotags: gorm:"column:tags; default:''; NOT NULL"
       string value = 7; // @gotags: gorm:"column:value; default:''; NOT NULL"
-      repeated CloudResource sub_resources = 8; // @gotags: gorm:"column:sub_resources; default:NULL"
-      google.protobuf.Timestamp created_at = 26; // @gotags: gorm:"column:created_at; default:CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp updated_at = 27; // @gotags: gorm:"column:updated_at; default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp deleted_at = 28; // @gotags: gorm:"column:deleted_at; default:NULL"
+      repeated CloudResource sub_resources = 8; // @gotags: gorm:"-"
 }
 
 message SecurityGroup {
+      // @goimport: "gorm.io/gorm"
+      // @gofield: gorm.Model
       string id = 1; // @gotags: gorm:"column:id;primaryKey; NOT NULL"
       string name = 2; // @gotags: gorm:"column:name; default:''; NOT NULL"
       string description = 3; // @gotags: gorm:"column:description; default:''; NOT NULL"
@@ -215,7 +215,4 @@ message SecurityGroup {
       string protocol = 7; // @gotags: gorm:"column:protocol; default:''; NOT NULL"
       string ip_cidr = 8; // @gotags: gorm:"column:ip_cidr; default:''; NOT NULL"
       int64 cluster_id = 9; // @gotags: gorm:"column:cluster_id; default:0; NOT NULL"
-      google.protobuf.Timestamp created_at = 10; // @gotags: gorm:"column:created_at; default:CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp updated_at = 11; // @gotags: gorm:"column:updated_at; default:CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-      google.protobuf.Timestamp deleted_at = 12; // @gotags: gorm:"column:deleted_at; default:NULL"
 }

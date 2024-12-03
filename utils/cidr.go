@@ -5,12 +5,26 @@ import (
 	"math"
 	"math/big"
 	"net"
+
+	"github.com/pkg/errors"
 )
+
+func GenerateCIDR(ip string, prefixLen int) (string, error) {
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return "", errors.New("invalid IP address")
+	}
+	if prefixLen < 0 || prefixLen > 32 {
+		return "", fmt.Errorf("invalid subnet mask: %d", prefixLen)
+	}
+	cidr := fmt.Sprintf("%s/%d", parsedIP.String(), prefixLen)
+	return cidr, nil
+}
 
 func GenerateSubnet(vpcCIDR string, exitsSubnets []string) (string, error) {
 	_, vpcNet, err := net.ParseCIDR(vpcCIDR)
 	if err != nil {
-		return "", fmt.Errorf("invalid VPC CIDR: %v", err)
+		return "", errors.Wrapf(err, "invalid VPC CIDR")
 	}
 
 	// Get VPC mask size

@@ -28,8 +28,6 @@ const (
 	Local       = "local"
 	BostionHost = "bostionhost"
 	Cluster     = "cluster"
-
-	ServerPort = 9000
 )
 
 var (
@@ -106,15 +104,6 @@ func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*bi
 			c.aliUc.ManageKubernetesCluster,
 		}
 	}
-	if cluster.Type == biz.ClusterType_GCP_GKE {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.gcpUc.Connections,
-			c.gcpUc.CreateNetwork,
-			c.gcpUc.SetByNodeGroups,
-			c.gcpUc.ImportKeyPair,
-			c.gcpUc.ManageKubernetesCluster,
-		}
-	}
 	for _, f := range funcs {
 		err := f(ctx, cluster)
 		if err != nil {
@@ -158,7 +147,7 @@ func (c *ClusterInterface) Stop(ctx context.Context, cluster *biz.Cluster) (*biz
 	if cluster.Type == biz.ClusterType_AWS_EKS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
-			c.awsUc.DeleteKubernetesCluster,
+			c.awsUc.ManageKubernetesCluster,
 			c.awsUc.DeleteKeyPair,
 			c.awsUc.DeleteNetwork,
 		}

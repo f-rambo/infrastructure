@@ -172,10 +172,52 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 }
 
 func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *Cluster) error {
-	// Initialize CS (Container Service) client
 	err := a.createCsClient()
 	if err != nil {
 		return err
+	}
+
+	// Check if cluster already exists
+	clusterCreted := false
+	nodepools := make([]*cs20151215.DescribeClusterNodePoolsResponseBodyNodepools, 0)
+	clusters, err := a.csClient.DescribeClustersV1(&cs20151215.DescribeClustersV1Request{
+		Name: tea.String(cluster.Name),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to describe clusters")
+	}
+	for _, c := range clusters.Body.Clusters {
+		if tea.StringValue(c.Name) == cluster.Name {
+			clusterCreted = true
+			nodePoolRes, err := a.csClient.DescribeClusterNodePools(c.ClusterId, &cs20151215.DescribeClusterNodePoolsRequest{})
+			if err != nil {
+				return errors.Wrap(err, "failed to describe cluster node pools")
+			}
+			nodepools = nodePoolRes.Body.Nodepools
+			break
+		}
+	}
+	if clusterCreted && cluster.Status == ClusterStatus_STOPPING {
+		// delete node pool
+		for _, nodePool := range nodepools {
+			_, err = a.csClient.DeleteClusterNodepool(&cluster.CloudClusterId, nodePool.NodepoolInfo.NodepoolId, &cs20151215.DeleteClusterNodepoolRequest{})
+			if err != nil {
+				return errors.Wrap(err, "failed to delete cluster node pool")
+			}
+			nodegroup := cluster.GetNodeGroupByCloudId(tea.StringValue(nodePool.NodepoolInfo.NodepoolId))
+			for _, node := range cluster.Nodes {
+				if node.NodeGroupId == nodegroup.Id {
+					node.Status = NodeStatus_NODE_DELETED
+				}
+			}
+		}
+		// delete cluster
+		_, err = a.csClient.DeleteCluster(&cluster.CloudClusterId, &cs20151215.DeleteClusterRequest{})
+		if err != nil {
+			return errors.Wrap(err, "failed to delete cluster")
+		}
+		cluster.Status = ClusterStatus_DELETED
+		return nil
 	}
 
 	// Get VPC and VSwitches
@@ -189,12 +231,23 @@ func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 	if len(subnets) == 0 {
 		return errors.New("no vswitches found for worker nodes")
 	}
+	subnetIds := make([]string, 0)
+	zoneIds := make([]string, 0)
+	for _, subnet := range subnets {
+		subnetIds = append(subnetIds, subnet.RefId)
+		subnetTags := cluster.DecodeTags(subnet.Tags)
+		zoneIds = append(zoneIds, cast.ToString(subnetTags[ResourceTypeKeyValue_ZONE]))
+	}
 
 	// Get security groups
 	sgs := cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP,
 		map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_SECURITY_GROUP_TYPE: ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER})
 	if len(sgs) == 0 {
 		return errors.New("security group not found")
+	}
+	sgsIDs := make([]string, 0)
+	for _, sg := range sgs {
+		sgsIDs = append(sgsIDs, sg.RefId)
 	}
 
 	// Get key pair
@@ -203,75 +256,135 @@ func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 		return errors.New("key pair not found")
 	}
 
-	// Check if cluster already exists
-	clusterCreted := false
-	clusters, err := a.csClient.DescribeClustersV1(&cs20151215.DescribeClustersV1Request{
-		Name: tea.String(cluster.Name),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to describe clusters")
+	// Get LB
+	lb := cluster.GetSingleCloudResource(ResourceType_LOAD_BALANCER)
+	if lb == nil {
+		return errors.New("load balancer not found")
 	}
-	for _, c := range clusters.Body.Clusters {
-		if tea.StringValue(c.Name) == cluster.Name {
-			clusterCreted = true
-			break
+
+	if !clusterCreted {
+		// Create cluster request
+		createReq := &cs20151215.CreateClusterRequest{
+			Name:                 tea.String(cluster.Name),
+			RegionId:             tea.String(cluster.Region),
+			ClusterType:          tea.String("ManagedKubernetes"), // Managed Kubernetes cluster
+			ClusterSpec:          tea.String("ack.pro.small"),
+			KubernetesVersion:    tea.String(cluster.Version),
+			Vpcid:                tea.String(vpc.RefId),
+			ServiceCidr:          tea.String(ServiceCIDR),
+			ContainerCidr:        tea.String(PodCIDR),
+			SnatEntry:            tea.Bool(false),
+			EndpointPublicAccess: tea.Bool(false),
+			SshFlags:             tea.Bool(false),
+			ClusterDomain:        tea.String(cluster.Name),
+			ProxyMode:            tea.String("ipvs"),
+			VswitchIds:           tea.StringSlice(subnetIds),
+			DeletionProtection:   tea.Bool(false),
+			ChargeType:           tea.String("PostPaid"),
+			ZoneIds:              tea.StringSlice(zoneIds),
+			LoadBalancerId:       tea.String(lb.RefId),
+			KeyPair:              tea.String(keyPair.RefId),
+			Runtime: &cs20151215.Runtime{
+				Name: tea.String("containerd"),
+			},
+			Addons: []*cs20151215.Addon{
+				{
+					Name:   tea.String("Flannel"),
+					Config: tea.String(""),
+				},
+			},
+			OperationPolicy: &cs20151215.CreateClusterRequestOperationPolicy{
+				ClusterAutoUpgrade: &cs20151215.CreateClusterRequestOperationPolicyClusterAutoUpgrade{
+					Enabled: tea.Bool(false),
+				},
+			},
+			Tags: []*cs20151215.Tag{
+				{
+					Key:   tea.String("Name"),
+					Value: tea.String(cluster.Name),
+				},
+			},
+		}
+
+		// Create cluster
+		createClusterRes, err := a.csClient.CreateCluster(createReq)
+		if err != nil {
+			return errors.Wrap(err, "failed to create kubernetes cluster")
+		}
+		cluster.CloudClusterId = tea.StringValue(createClusterRes.Body.ClusterId)
+		a.log.Infof("kubernetes cluster %s created successfully", cluster.Name)
+		return nil
+	}
+
+	// clear node pool
+	for _, nodeGroup := range cluster.NodeGroups {
+		nodeGroupExits := false
+		for _, nodePool := range nodepools {
+			if tea.StringValue(nodePool.NodepoolInfo.NodepoolId) == nodeGroup.CloudNodeGroupId {
+				nodeGroupExits = true
+				break
+			}
+		}
+		if !nodeGroupExits {
+			_, err = a.csClient.DeleteClusterNodepool(&cluster.CloudClusterId, tea.String(nodeGroup.CloudNodeGroupId), &cs20151215.DeleteClusterNodepoolRequest{})
+			if err != nil {
+				return errors.Wrap(err, "failed to delete cluster node pool")
+			}
+			nodegroup := cluster.GetNodeGroupByCloudId(nodeGroup.CloudNodeGroupId)
+			for _, node := range cluster.Nodes {
+				if node.NodeGroupId == nodegroup.Id {
+					node.Status = NodeStatus_NODE_DELETED
+				}
+			}
 		}
 	}
-	if !clusterCreted {
 
-	}
-
-	// Prepare worker nodes configuration
-	workerNodes := make([]*cs20151215.CreateClusterRequestWorkerDataDisks, 0)
+	// create node pool
 	for _, nodeGroup := range cluster.NodeGroups {
-		workerNodes = append(workerNodes, &cs20151215.CreateClusterRequestWorkerDataDisks{
-			Category: tea.String("cloud_essd"),
-			Size:     tea.String(string(nodeGroup.DataDiskSize)),
-		})
-
-	}
-
-	// Create cluster request
-	createReq := &cs20151215.CreateClusterRequest{
-		KubernetesVersion:        tea.String(cluster.Version),
-		LoadBalancerId:           nil,
-		LoadBalancerSpec:         nil,
-		Name:                     tea.String(cluster.Name),
-		RegionId:                 tea.String(cluster.Region),
-		ClusterType:              tea.String("ManagedKubernetes"), // Managed Kubernetes cluster
-		Vpcid:                    tea.String(vpc.RefId),
-		VswitchIds:               []*string{},
-		SecurityGroupId:          tea.String(sgs[0].RefId),
-		ContainerCidr:            tea.String("172.20.0.0/16"),
-		ServiceCidr:              tea.String("172.21.0.0/20"),
-		KeyPair:                  tea.String(keyPair.RefId),
-		WorkerSystemDiskCategory: tea.String("cloud_essd"),
-		WorkerSystemDiskSize:     tea.Int64(120),
-		WorkerDataDisks:          workerNodes,
-		MasterInstanceTypes:      []*string{tea.String("ecs.n4.large")},
-		WorkerInstanceTypes:      []*string{tea.String("ecs.n4.large")},
-		NumOfNodes:               tea.Int64(int64(1)),
-		CloudMonitorFlags:        tea.Bool(true),
-		Platform:                 tea.String("AliyunLinux"),
-		OsType:                   tea.String("Linux"),
-		CpuPolicy:                tea.String("none"),
-		NodePortRange:            tea.String("30000-32767"),
-		ProxyMode:                tea.String("ipvs"),
-		Tags: []*cs20151215.Tag{
-			{
-				Key:   tea.String("Name"),
-				Value: tea.String(cluster.Name),
+		nodePoolReq := &cs20151215.CreateClusterNodePoolRequest{
+			NodepoolInfo: &cs20151215.CreateClusterNodePoolRequestNodepoolInfo{
+				Name: tea.String(nodeGroup.Name),
+				Type: tea.String("ess"),
 			},
-		},
+			AutoScaling: &cs20151215.CreateClusterNodePoolRequestAutoScaling{
+				Enable: tea.Bool(false),
+			},
+			Management: &cs20151215.CreateClusterNodePoolRequestManagement{
+				Enable: tea.Bool(false),
+			},
+			ScalingGroup: &cs20151215.CreateClusterNodePoolRequestScalingGroup{
+				InstanceChargeType: tea.String("PostPaid"),
+				VswitchIds:         tea.StringSlice(subnetIds),
+				InstanceTypes:      tea.StringSlice([]string{nodeGroup.InstanceType}),
+				SpotStrategy:       tea.String("NoSpot"),
+				ImageId:            tea.String(nodeGroup.Image),
+				SystemDiskCategory: tea.String("cloud"),
+				SystemDiskSize:     tea.Int64(int64(nodeGroup.SystemDiskSize)),
+				SecurityGroupIds:   tea.StringSlice(sgsIDs),
+				KeyPair:            tea.String(keyPair.RefId),
+				DesiredSize:        tea.Int64(int64(nodeGroup.MinSize)),
+			},
+		}
+		if nodeGroup.DataDiskSize > 0 {
+			nodePoolReq.ScalingGroup.DataDisks = []*cs20151215.DataDisk{
+				{
+					Category:    tea.String("cloud"),
+					Size:        tea.Int64(int64(nodeGroup.DataDiskSize)),
+					Encrypted:   tea.String("false"),
+					AutoFormat:  tea.Bool(true),
+					FileSystem:  tea.String("ext4"),
+					MountTarget: tea.String("/data"),
+					Device:      tea.String(nodeGroup.DataDeviceName),
+				},
+			}
+		}
+		nodePoolRes, err := a.csClient.CreateClusterNodePool(tea.String(cluster.CloudClusterId), nodePoolReq)
+		if err != nil {
+			return errors.Wrap(err, "failed to create cluster node pool")
+		}
+		nodeGroup.CloudNodeGroupId = tea.StringValue(nodePoolRes.Body.NodepoolId)
+		log.Infof("kubernetes node pool %s created successfully", nodeGroup.Name)
 	}
-
-	// Create cluster
-	_, err = a.csClient.CreateCluster(createReq)
-	if err != nil {
-		return errors.Wrap(err, "failed to create kubernetes cluster")
-	}
-
-	a.log.Infof("kubernetes cluster %s created successfully", cluster.Name)
 	return nil
 }
 
@@ -913,18 +1026,10 @@ func (a *AliCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 		if len(cluster.GetCloudResource(ResourceType_VPC)) > 0 {
 			return nil
 		}
-		if tea.StringValue(vpc.VpcName) != vpcName {
-			_, err := a.vpcClient.ModifyVpcAttribute(&vpc20160428.ModifyVpcAttributeRequest{
-				VpcId:    vpc.VpcId,
-				RegionId: tea.String(cluster.Region),
-				VpcName:  tea.String(vpcName),
-			})
-			if err != nil {
-				return errors.Wrap(err, "failed to modify VPC name")
-			}
+		if tea.StringValue(vpc.CidrBlock) != VpcCIDR {
+			continue
 		}
 		a.createVpcTags(cluster.Region, tea.StringValue(vpc.VpcId), "VPC", vpcTags)
-		cluster.IpCidr = tea.StringValue(vpc.CidrBlock)
 		cluster.AddCloudResource(&CloudResource{
 			RefId: tea.StringValue(vpc.VpcId),
 			Name:  vpcName,
@@ -939,7 +1044,7 @@ func (a *AliCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 	vpcResponce, err := a.vpcClient.CreateVpc(&vpc20160428.CreateVpcRequest{
 		VpcName:   tea.String(cluster.Name + "-vpc"),
 		RegionId:  tea.String(cluster.Region),
-		CidrBlock: tea.String(cluster.IpCidr),
+		CidrBlock: tea.String(VpcCIDR),
 	})
 	if err := a.handlerError(err); err != nil {
 		return err
@@ -1049,7 +1154,7 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			if cluster.GetCloudResourceByTags(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: name}) != nil {
 				continue
 			}
-			cidr, err := utils.GenerateSubnet(cluster.IpCidr, subnetExitsCidrs)
+			cidr, err := utils.GenerateSubnet(VpcCIDR, subnetExitsCidrs)
 			if err != nil {
 				return err
 			}
@@ -1092,7 +1197,7 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 			continue
 		}
 		// Create public subnet
-		cidr, err := utils.GenerateSubnet(cluster.IpCidr, subnetExitsCidrs)
+		cidr, err := utils.GenerateSubnet(VpcCIDR, subnetExitsCidrs)
 		if err != nil {
 			return err
 		}
@@ -1801,7 +1906,6 @@ func (a *AliCloudUsecase) CreateSLB(ctx context.Context, cluster *Cluster) error
 		Type:  ResourceType_LOAD_BALANCER,
 	})
 
-	// Create VServer Group (similar to target group in AWS)
 	vserverGroupName := fmt.Sprintf("%s-vserver-group", cluster.Name)
 	vserverGroupReq := &slb20140515.CreateVServerGroupRequest{
 		RegionId:         tea.String(cluster.Region),
@@ -1903,14 +2007,17 @@ func (a *AliCloudUsecase) findInstanceType(instanceTypeFamiliy string, CPU, GPU,
 	instanceTypes := make(InstanceTypes, 0)
 	nexttoken := ""
 	for {
-		instancesRes, err := a.ecsClient.DescribeInstanceTypes(&ecs20140526.DescribeInstanceTypesRequest{
+		instancesReq := &ecs20140526.DescribeInstanceTypesRequest{
 			InstanceTypeFamily:  tea.String(instanceTypeFamiliy),
-			CpuArchitecture:     tea.String("x86_64"),
-			MaximumCpuCoreCount: tea.Int32(CPU),
-			MaximumGPUAmount:    tea.Int32(GPU),
-			MaximumMemorySize:   tea.Float32(float32(Memory)),
+			CpuArchitecture:     tea.String("X86"),
+			MinimumCpuCoreCount: tea.Int32(CPU),
+			MinimumMemorySize:   tea.Float32(float32(Memory)),
 			NextToken:           tea.String(nexttoken),
-		})
+		}
+		if GPU > 0 {
+			instancesReq.MinimumGPUAmount = tea.Int32(GPU)
+		}
+		instancesRes, err := a.ecsClient.DescribeInstanceTypes(instancesReq)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to describe instance types")
 		}

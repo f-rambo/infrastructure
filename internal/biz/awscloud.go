@@ -107,14 +107,23 @@ func (a *AwsCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 }
 
 func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *Cluster) error {
-	clusters, err := a.eksClient.ListClusters(ctx, &eks.ListClustersInput{
-		MaxResults: aws.Int32(100),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to list EKS clusters")
+	clusterNames := make([]string, 0)
+	nextToken := ""
+	for {
+		clusterRes, err := a.eksClient.ListClusters(ctx, &eks.ListClustersInput{
+			MaxResults: aws.Int32(100),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to list EKS clusters")
+		}
+		clusterNames = append(clusterNames, clusterRes.Clusters...)
+		nextToken = aws.ToString(clusterRes.NextToken)
+		if nextToken == "" {
+			break
+		}
 	}
 	clusterCreted := false
-	for _, c := range clusters.Clusters {
+	for _, c := range clusterNames {
 		if c == cluster.Name {
 			clusterCreted = true
 			break
@@ -170,6 +179,17 @@ func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 		if err != nil {
 			return errors.Wrap(err, "failed to describe node group")
 		}
+		if nodeGroup.TargetSize == 0 && nodeGroupRes.Nodegroup != nil {
+			// delete node group
+			_, err = a.eksClient.DeleteNodegroup(ctx, &eks.DeleteNodegroupInput{
+				ClusterName:   aws.String(cluster.Name),
+				NodegroupName: aws.String(nodeGroup.Name),
+			})
+			if err != nil {
+				return errors.Wrap(err, "failed to delete node group "+nodeGroup.Name)
+			}
+			continue
+		}
 		if nodeGroupRes.Nodegroup == nil {
 			// create node groups
 			createNodeGroupInput := &eks.CreateNodegroupInput{
@@ -177,23 +197,23 @@ func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 				NodegroupName: aws.String(nodeGroup.Name),
 				ScalingConfig: &eksTypes.NodegroupScalingConfig{
 					DesiredSize: aws.Int32(nodeGroup.TargetSize),
-					MaxSize:     aws.Int32(nodeGroup.MaxSize),
-					MinSize:     aws.Int32(nodeGroup.MinSize),
+					MaxSize:     aws.Int32(nodeGroup.TargetSize),
+					MinSize:     aws.Int32(nodeGroup.TargetSize),
 				},
 				Subnets:        subnetIds,
 				InstanceTypes:  []string{nodeGroup.InstanceType},
 				DiskSize:       aws.Int32(int32(nodeGroup.DataDiskSize)),
 				AmiType:        eksTypes.AMITypesAl2X8664,
 				NodeRole:       aws.String(roleArn),
-				Labels:         map[string]string{"role": nodeGroup.Name},
+				Labels:         map[string]string{"role": nodeGroup.Type.String()},
 				ReleaseVersion: aws.String("1.27.1-20230926"),
 				CapacityType:   eksTypes.CapacityTypesOnDemand,
 			}
-			// a.eksClient.UpdateNodegroupConfig()
-			_, err = a.eksClient.CreateNodegroup(ctx, createNodeGroupInput)
+			nodeGroupRes, err := a.eksClient.CreateNodegroup(ctx, createNodeGroupInput)
 			if err != nil {
 				return errors.Wrap(err, "failed to create node group "+nodeGroup.Name)
 			}
+			nodeGroup.CloudNodeGroupId = aws.ToString(nodeGroupRes.Nodegroup.NodegroupName)
 
 			// Wait for node group to be active
 			nodeGroupWaiter := eks.NewNodegroupActiveWaiter(a.eksClient)
@@ -212,8 +232,8 @@ func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 			NodegroupName: aws.String(nodeGroup.Name),
 			ScalingConfig: &eksTypes.NodegroupScalingConfig{
 				DesiredSize: aws.Int32(nodeGroup.TargetSize),
-				MaxSize:     aws.Int32(nodeGroup.MaxSize),
-				MinSize:     aws.Int32(nodeGroup.MinSize),
+				MaxSize:     aws.Int32(nodeGroup.TargetSize),
+				MinSize:     aws.Int32(nodeGroup.TargetSize),
 			},
 		})
 		if err != nil {
@@ -229,39 +249,16 @@ func (a *AwsCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 			return errors.Wrap(err, "failed waiting for node group to be active")
 		}
 	}
-	a.log.Infof("kubernetes cluster %s created successfully", cluster.Name)
-	return nil
-}
-
-// delete kubernetes cluster
-func (a *AwsCloudUsecase) DeleteKubernetesCluster(ctx context.Context, cluster *Cluster) error {
-	for _, nodeGroup := range cluster.NodeGroups {
-		_, err := a.eksClient.DeleteNodegroup(ctx, &eks.DeleteNodegroupInput{
-			ClusterName:   aws.String(cluster.Name),
-			NodegroupName: aws.String(nodeGroup.Name),
+	if cluster.Status == ClusterStatus_STOPPING {
+		// delete EKS cluster
+		_, err = a.eksClient.DeleteCluster(ctx, &eks.DeleteClusterInput{
+			Name: aws.String(cluster.Name),
 		})
 		if err != nil {
-			return errors.Wrap(err, "failed to delete node group "+nodeGroup.Name)
+			return errors.Wrap(err, "failed to delete EKS cluster")
 		}
 	}
-	clusters, err := a.eksClient.ListClusters(ctx, &eks.ListClustersInput{
-		MaxResults: aws.Int32(100),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to list EKS clusters")
-	}
-	for _, c := range clusters.Clusters {
-		if c == cluster.Name {
-			_, err = a.eksClient.DeleteCluster(ctx, &eks.DeleteClusterInput{
-				Name: aws.String(cluster.Name),
-			})
-			if err != nil {
-				return errors.Wrap(err, "failed to delete EKS cluster")
-			}
-			break
-		}
-	}
-	a.log.Infof("kubernetes cluster %s deleted successfully", cluster.Name)
+	a.log.Infof("kubernetes cluster %s created successfully", cluster.Name)
 	return nil
 }
 
@@ -970,8 +967,10 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 		if len(cluster.GetCloudResource(ResourceType_VPC)) != 0 {
 			return nil
 		}
+		if aws.ToString(vpc.CidrBlock) != VpcCIDR {
+			continue
+		}
 		a.createTags(ctx, aws.ToString(vpc.VpcId), ResourceType_VPC, vpcTags)
-		cluster.IpCidr = aws.ToString(vpc.CidrBlock)
 		cluster.AddCloudResource(&CloudResource{
 			RefId: aws.ToString(vpc.VpcId),
 			Name:  vpcName,
@@ -986,7 +985,7 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 	// Create VPC if it doesn't exist
 	vpcResource := &CloudResource{Name: vpcName, Tags: cluster.EncodeTags(vpcTags), Type: ResourceType_VPC}
 	vpcOutput, err := a.ec2Client.CreateVpc(ctx, &ec2.CreateVpcInput{
-		CidrBlock: aws.String(cluster.IpCidr),
+		CidrBlock: aws.String(VpcCIDR),
 		TagSpecifications: []ec2Types.TagSpecification{
 			{
 				ResourceType: ec2Types.ResourceTypeVpc,
@@ -1098,7 +1097,7 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 	// get subnet cidr
 	privateSubnetCount := len(cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES)) * 2
 	publicSubnetCount := len(cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES))
-	subnetCidrRes, err := utils.GenerateSubnets(cluster.IpCidr, privateSubnetCount+publicSubnetCount+len(subnets))
+	subnetCidrRes, err := utils.GenerateSubnets(VpcCIDR, privateSubnetCount+publicSubnetCount+len(subnets))
 	if err != nil {
 		return errors.Wrap(err, "failed to generate subnet CIDRs")
 	}

@@ -488,7 +488,7 @@ func (g *GoogleCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster
 	// Generate subnet CIDRs
 	privateSubnetCount := len(cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES)) * 2
 	publicSubnetCount := len(cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES))
-	subnetCidrs, err := utils.GenerateSubnets(cluster.IpCidr, privateSubnetCount+publicSubnetCount)
+	subnetCidrs, err := utils.GenerateSubnets(VpcCIDR, privateSubnetCount+publicSubnetCount)
 	if err != nil {
 		return errors.Wrap(err, "failed to generate subnet CIDRs")
 	}
@@ -784,7 +784,7 @@ func (g *GoogleCloudUsecase) createSecurityGroup(ctx context.Context, cluster *C
 					IPProtocol: "icmp",
 				},
 			},
-			sourceRanges: []string{cluster.IpCidr},
+			sourceRanges: []string{VpcCIDR},
 		},
 		{
 			name:        fmt.Sprintf("%s-allow-ssh", cluster.Name),

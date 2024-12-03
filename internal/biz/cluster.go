@@ -8,6 +8,17 @@ import (
 	"github.com/spf13/cast"
 )
 
+// Generated CIDRs:
+// VPC CIDR:     172.16.0.0/16
+// Service CIDR: 10.96.0.0/16
+// Pod CIDR:     10.244.0.0/16
+
+const (
+	VpcCIDR     = "172.16.0.0/16"
+	ServiceCIDR = "10.96.0.0/16"
+	PodCIDR     = "10.244.0.0/16"
+)
+
 func (c *Cluster) GetCloudResource(resourceType ResourceType) []*CloudResource {
 	cloudResources := make([]*CloudResource, 0)
 	for _, resources := range c.CloudResources {
@@ -270,6 +281,15 @@ func (n NodeGroups) Less(i, j int) bool {
 func (c *Cluster) GetNodeGroup(nodeGroupId string) *NodeGroup {
 	for _, nodeGroup := range c.NodeGroups {
 		if nodeGroup.Id == nodeGroupId {
+			return nodeGroup
+		}
+	}
+	return nil
+}
+
+func (c *Cluster) GetNodeGroupByCloudId(cloudNodeGroupId string) *NodeGroup {
+	for _, nodeGroup := range c.NodeGroups {
+		if nodeGroup.CloudNodeGroupId == cloudNodeGroupId {
 			return nodeGroup
 		}
 	}
