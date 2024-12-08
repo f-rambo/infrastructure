@@ -20,14 +20,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ClusterInterface_Start_FullMethodName                = "/cluster.ClusterInterface/Start"
-	ClusterInterface_Stop_FullMethodName                 = "/cluster.ClusterInterface/Stop"
-	ClusterInterface_GetRegions_FullMethodName           = "/cluster.ClusterInterface/GetRegions"
-	ClusterInterface_MigrateToBostionHost_FullMethodName = "/cluster.ClusterInterface/MigrateToBostionHost"
-	ClusterInterface_GetNodesSystemInfo_FullMethodName   = "/cluster.ClusterInterface/GetNodesSystemInfo"
-	ClusterInterface_Install_FullMethodName              = "/cluster.ClusterInterface/Install"
-	ClusterInterface_UnInstall_FullMethodName            = "/cluster.ClusterInterface/UnInstall"
-	ClusterInterface_HandlerNodes_FullMethodName         = "/cluster.ClusterInterface/HandlerNodes"
+	ClusterInterface_Start_FullMethodName                = "/infrastructure.api.cluster.ClusterInterface/Start"
+	ClusterInterface_Stop_FullMethodName                 = "/infrastructure.api.cluster.ClusterInterface/Stop"
+	ClusterInterface_GetRegions_FullMethodName           = "/infrastructure.api.cluster.ClusterInterface/GetRegions"
+	ClusterInterface_MigrateToBostionHost_FullMethodName = "/infrastructure.api.cluster.ClusterInterface/MigrateToBostionHost"
+	ClusterInterface_GetNodesSystemInfo_FullMethodName   = "/infrastructure.api.cluster.ClusterInterface/GetNodesSystemInfo"
+	ClusterInterface_Install_FullMethodName              = "/infrastructure.api.cluster.ClusterInterface/Install"
+	ClusterInterface_UnInstall_FullMethodName            = "/infrastructure.api.cluster.ClusterInterface/UnInstall"
+	ClusterInterface_HandlerNodes_FullMethodName         = "/infrastructure.api.cluster.ClusterInterface/HandlerNodes"
 )
 
 // ClusterInterfaceClient is the client API for ClusterInterface service.
@@ -347,7 +347,7 @@ func _ClusterInterface_HandlerNodes_Handler(srv interface{}, ctx context.Context
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ClusterInterface_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "cluster.ClusterInterface",
+	ServiceName: "infrastructure.api.cluster.ClusterInterface",
 	HandlerType: (*ClusterInterfaceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

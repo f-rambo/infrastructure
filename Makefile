@@ -47,7 +47,7 @@ docker-build:
 
 .PHONY: docker-run
 docker-run:
-	docker run -it -d --rm -p 8000:8000 -p 9000:9000 -v ./configs/:/data/conf --name $(SERVER_NAME)-$(VERSION) $(IMG) 
+	docker run -it -d --rm -p 8002:8002 -p 9002:9002 -v ./configs/:/data/conf --name $(SERVER_NAME)-$(VERSION) $(IMG) 
 
 .PHONY: docker-stop
 docker-stop:

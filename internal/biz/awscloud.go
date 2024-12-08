@@ -74,7 +74,6 @@ func (a *AwsCloudUsecase) Connections(ctx context.Context, cluster *Cluster) err
 	return nil
 }
 
-// Get availability zones
 func (a *AwsCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Cluster) error {
 	cluster.DeleteCloudResource(ResourceType_AVAILABILITY_ZONES)
 	result, err := a.ec2Client.DescribeAvailabilityZones(ctx, &ec2.DescribeAvailabilityZonesInput{
@@ -668,7 +667,6 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 		}
 		if !nodeExits && (node.Status == NodeStatus_NODE_RUNNING || node.Status == NodeStatus_NODE_PENDING) {
 			node.InstanceId = ""
-			node.Status = NodeStatus_NODE_DELETED
 		}
 	}
 	// handler needdelete instances
@@ -699,7 +697,6 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 		for _, node := range cluster.Nodes {
 			if utils.InArray(node.InstanceId, deleteInstanceIDs) {
 				node.InstanceId = ""
-				node.Status = NodeStatus_NODE_DELETED
 			}
 		}
 	}
@@ -761,7 +758,6 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 			if err != nil {
 				return errors.Wrap(err, "failed to run instances")
 			}
-			node.Status = NodeStatus_NODE_PENDING
 			for _, instance := range instancesOutput.Instances {
 				instanceIds = append(instanceIds, aws.ToString(instance.InstanceId))
 				node.InstanceId = aws.ToString(instance.InstanceId)
@@ -814,7 +810,6 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 		if err != nil {
 			return fmt.Errorf("failed to wait for instance termination: %w", err)
 		}
-		cluster.BostionHost.Status = NodeStatus_NODE_DELETED
 		cluster.BostionHost.InstanceId = ""
 		return nil
 	}
@@ -918,7 +913,6 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	for _, instance := range instances {
 		cluster.BostionHost.InternalIp = aws.ToString(instance.PrivateIpAddress)
 		cluster.BostionHost.ExternalIp = aws.ToString(instance.PublicIpAddress)
-		cluster.BostionHost.Status = NodeStatus_NODE_RUNNING
 		cluster.BostionHost.InstanceId = aws.ToString(instance.InstanceId)
 		cluster.BostionHost.User = a.determineUsername(aws.ToString(image.Name), aws.ToString(image.Description))
 		// cpu

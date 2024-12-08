@@ -204,12 +204,6 @@ func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 			if err != nil {
 				return errors.Wrap(err, "failed to delete cluster node pool")
 			}
-			nodegroup := cluster.GetNodeGroupByCloudId(tea.StringValue(nodePool.NodepoolInfo.NodepoolId))
-			for _, node := range cluster.Nodes {
-				if node.NodeGroupId == nodegroup.Id {
-					node.Status = NodeStatus_NODE_DELETED
-				}
-			}
 		}
 		// delete cluster
 		_, err = a.csClient.DeleteCluster(&cluster.CloudClusterId, &cs20151215.DeleteClusterRequest{})
@@ -218,6 +212,20 @@ func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 		}
 		cluster.Status = ClusterStatus_DELETED
 		return nil
+	}
+
+	// clear node pool
+	for _, nodeGroup := range cluster.NodeGroups {
+		nodeGroupExits := false
+		for _, nodePool := range nodepools {
+			if tea.StringValue(nodePool.NodepoolInfo.NodepoolId) == nodeGroup.CloudNodeGroupId {
+				nodeGroupExits = true
+				break
+			}
+		}
+		if !nodeGroupExits {
+			nodeGroup.CloudNodeGroupId = ""
+		}
 	}
 
 	// Get VPC and VSwitches
@@ -313,76 +321,86 @@ func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *
 		}
 		cluster.CloudClusterId = tea.StringValue(createClusterRes.Body.ClusterId)
 		a.log.Infof("kubernetes cluster %s created successfully", cluster.Name)
-		return nil
-	}
-
-	// clear node pool
-	for _, nodeGroup := range cluster.NodeGroups {
-		nodeGroupExits := false
-		for _, nodePool := range nodepools {
-			if tea.StringValue(nodePool.NodepoolInfo.NodepoolId) == nodeGroup.CloudNodeGroupId {
-				nodeGroupExits = true
-				break
-			}
-		}
-		if !nodeGroupExits {
-			_, err = a.csClient.DeleteClusterNodepool(&cluster.CloudClusterId, tea.String(nodeGroup.CloudNodeGroupId), &cs20151215.DeleteClusterNodepoolRequest{})
-			if err != nil {
-				return errors.Wrap(err, "failed to delete cluster node pool")
-			}
-			nodegroup := cluster.GetNodeGroupByCloudId(nodeGroup.CloudNodeGroupId)
-			for _, node := range cluster.Nodes {
-				if node.NodeGroupId == nodegroup.Id {
-					node.Status = NodeStatus_NODE_DELETED
-				}
-			}
-		}
 	}
 
 	// create node pool
 	for _, nodeGroup := range cluster.NodeGroups {
-		nodePoolReq := &cs20151215.CreateClusterNodePoolRequest{
-			NodepoolInfo: &cs20151215.CreateClusterNodePoolRequestNodepoolInfo{
-				Name: tea.String(nodeGroup.Name),
-				Type: tea.String("ess"),
-			},
-			AutoScaling: &cs20151215.CreateClusterNodePoolRequestAutoScaling{
-				Enable: tea.Bool(false),
-			},
-			Management: &cs20151215.CreateClusterNodePoolRequestManagement{
-				Enable: tea.Bool(false),
-			},
-			ScalingGroup: &cs20151215.CreateClusterNodePoolRequestScalingGroup{
-				InstanceChargeType: tea.String("PostPaid"),
-				VswitchIds:         tea.StringSlice(subnetIds),
-				InstanceTypes:      tea.StringSlice([]string{nodeGroup.InstanceType}),
-				SpotStrategy:       tea.String("NoSpot"),
-				ImageId:            tea.String(nodeGroup.Image),
-				SystemDiskCategory: tea.String("cloud"),
-				SystemDiskSize:     tea.Int64(int64(nodeGroup.SystemDiskSize)),
-				SecurityGroupIds:   tea.StringSlice(sgsIDs),
-				KeyPair:            tea.String(keyPair.RefId),
-				DesiredSize:        tea.Int64(int64(nodeGroup.MinSize)),
-			},
-		}
-		if nodeGroup.DataDiskSize > 0 {
-			nodePoolReq.ScalingGroup.DataDisks = []*cs20151215.DataDisk{
-				{
-					Category:    tea.String("cloud"),
-					Size:        tea.Int64(int64(nodeGroup.DataDiskSize)),
-					Encrypted:   tea.String("false"),
-					AutoFormat:  tea.Bool(true),
-					FileSystem:  tea.String("ext4"),
-					MountTarget: tea.String("/data"),
-					Device:      tea.String(nodeGroup.DataDeviceName),
+		if nodeGroup.CloudNodeGroupId != "" {
+			nodePoolReq := &cs20151215.CreateClusterNodePoolRequest{
+				NodepoolInfo: &cs20151215.CreateClusterNodePoolRequestNodepoolInfo{
+					Name: tea.String(nodeGroup.Name),
+					Type: tea.String("ess"),
+				},
+				AutoScaling: &cs20151215.CreateClusterNodePoolRequestAutoScaling{
+					Enable: tea.Bool(false),
+				},
+				Management: &cs20151215.CreateClusterNodePoolRequestManagement{
+					Enable: tea.Bool(false),
+				},
+				ScalingGroup: &cs20151215.CreateClusterNodePoolRequestScalingGroup{
+					InstanceChargeType: tea.String("PostPaid"),
+					VswitchIds:         tea.StringSlice(subnetIds),
+					InstanceTypes:      tea.StringSlice([]string{nodeGroup.InstanceType}),
+					SpotStrategy:       tea.String("NoSpot"),
+					ImageId:            tea.String(nodeGroup.Image),
+					SystemDiskCategory: tea.String("cloud"),
+					SystemDiskSize:     tea.Int64(int64(nodeGroup.SystemDiskSize)),
+					SecurityGroupIds:   tea.StringSlice(sgsIDs),
+					KeyPair:            tea.String(keyPair.RefId),
+					DesiredSize:        tea.Int64(int64(nodeGroup.TargetSize)),
 				},
 			}
+			if nodeGroup.DataDiskSize > 0 {
+				nodePoolReq.ScalingGroup.DataDisks = []*cs20151215.DataDisk{
+					{
+						Category:    tea.String("cloud"),
+						Size:        tea.Int64(int64(nodeGroup.DataDiskSize)),
+						Encrypted:   tea.String("false"),
+						AutoFormat:  tea.Bool(true),
+						FileSystem:  tea.String("ext4"),
+						MountTarget: tea.String("/data"),
+						Device:      tea.String(nodeGroup.DataDeviceName),
+					},
+				}
+			}
+			nodePoolRes, err := a.csClient.CreateClusterNodePool(tea.String(cluster.CloudClusterId), nodePoolReq)
+			if err != nil {
+				return errors.Wrap(err, "failed to create cluster node pool")
+			}
+			nodeGroup.CloudNodeGroupId = tea.StringValue(nodePoolRes.Body.NodepoolId)
+		} else {
+			modifyNodePoolReq := &cs20151215.ModifyClusterNodePoolRequest{
+				ScalingGroup: &cs20151215.ModifyClusterNodePoolRequestScalingGroup{
+					InstanceChargeType: tea.String("PostPaid"),
+					VswitchIds:         tea.StringSlice(subnetIds),
+					InstanceTypes:      tea.StringSlice([]string{nodeGroup.InstanceType}),
+					SpotStrategy:       tea.String("NoSpot"),
+					ImageId:            tea.String(nodeGroup.Image),
+					SystemDiskCategory: tea.String("cloud"),
+					SystemDiskSize:     tea.Int64(int64(nodeGroup.SystemDiskSize)),
+					KeyPair:            tea.String(keyPair.RefId),
+					DesiredSize:        tea.Int64(int64(nodeGroup.TargetSize)),
+				},
+			}
+			if nodeGroup.DataDiskSize > 0 {
+				modifyNodePoolReq.ScalingGroup.DataDisks = []*cs20151215.DataDisk{
+					{
+						Category:    tea.String("cloud"),
+						Size:        tea.Int64(int64(nodeGroup.DataDiskSize)),
+						Encrypted:   tea.String("false"),
+						AutoFormat:  tea.Bool(true),
+						FileSystem:  tea.String("ext4"),
+						MountTarget: tea.String("/data"),
+						Device:      tea.String(nodeGroup.DataDeviceName),
+					},
+				}
+			}
+			modifyNodePoolRes, err := a.csClient.ModifyClusterNodePool(tea.String(cluster.CloudClusterId), tea.String(nodeGroup.CloudNodeGroupId), modifyNodePoolReq)
+			if err != nil {
+				return errors.Wrap(err, "failed to modify cluster node pool")
+			}
+			nodeGroup.CloudNodeGroupId = tea.StringValue(modifyNodePoolRes.Body.NodepoolId)
 		}
-		nodePoolRes, err := a.csClient.CreateClusterNodePool(tea.String(cluster.CloudClusterId), nodePoolReq)
-		if err != nil {
-			return errors.Wrap(err, "failed to create cluster node pool")
-		}
-		nodeGroup.CloudNodeGroupId = tea.StringValue(nodePoolRes.Body.NodepoolId)
 		log.Infof("kubernetes node pool %s created successfully", nodeGroup.Name)
 	}
 	return nil
@@ -597,7 +615,6 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 		}
 		if !nodeExits && (node.Status == NodeStatus_NODE_RUNNING || node.Status == NodeStatus_NODE_PENDING) {
 			node.InstanceId = ""
-			node.Status = NodeStatus_NODE_DELETED
 		}
 	}
 
@@ -626,7 +643,6 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 		for _, node := range cluster.Nodes {
 			if utils.InArray(node.InstanceId, deleteInstanceIDs) {
 				node.InstanceId = ""
-				node.Status = NodeStatus_NODE_DELETED
 			}
 		}
 	}
@@ -641,11 +657,12 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 			return errors.New("security group not found")
 		}
 		createInstanceReq := &ecs20140526.CreateInstanceRequest{
-			RegionId:        tea.String(cluster.Region),
-			ImageId:         tea.String(nodeGroup.Image),
-			InstanceType:    tea.String(nodeGroup.InstanceType),
-			KeyPairName:     tea.String(cluster.GetSingleCloudResource(ResourceType_KEY_PAIR).Name),
-			SecurityGroupId: tea.String(sgs[0].RefId),
+			InstanceChargeType: tea.String("PostPaid"),
+			RegionId:           tea.String(cluster.Region),
+			ImageId:            tea.String(nodeGroup.Image),
+			InstanceType:       tea.String(nodeGroup.InstanceType),
+			KeyPairName:        tea.String(cluster.GetSingleCloudResource(ResourceType_KEY_PAIR).Name),
+			SecurityGroupId:    tea.String(sgs[0].RefId),
 			SystemDisk: &ecs20140526.CreateInstanceRequestSystemDisk{
 				Category: tea.String("cloud_ssd"),
 				Size:     tea.Int32(nodeGroup.SystemDiskSize),
@@ -673,7 +690,6 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 			}
 			instanceIds = append(instanceIds, tea.StringValue(createInstanceRes.Body.InstanceId))
 			node.InstanceId = tea.StringValue(createInstanceRes.Body.InstanceId)
-			node.Status = NodeStatus_NODE_PENDING
 			if nodeGroup.DataDiskSize != 0 {
 				dataDiskName := fmt.Sprintf("%s-%s-data-disk", cluster.Name, node.Name)
 				dataDiskRes, err := a.ecsClient.CreateDisk(&ecs20140526.CreateDiskRequest{
@@ -799,7 +815,6 @@ func (a *AliCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 			return errors.Wrap(err, "failed to delete instance")
 		}
 		cluster.BostionHost.InstanceId = ""
-		cluster.BostionHost.Status = NodeStatus_NODE_DELETED
 		return nil
 	}
 
@@ -823,19 +838,19 @@ func (a *AliCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	bastionName := fmt.Sprintf("%s-bastion", cluster.Name)
 	// Create bastion host
 	bastionHostRes, err := a.ecsClient.CreateInstance(&ecs20140526.CreateInstanceRequest{
-		RegionId:        tea.String(cluster.Region),
-		InstanceName:    tea.String(bastionName),
-		InstanceType:    insteaceType.InstanceTypeId,
-		SecurityGroupId: tea.String(sgs[0].RefId),
-		VSwitchId:       tea.String(publicVSwitchs[0].RefId),
-		KeyPairName:     tea.String(keyPair.RefId),
+		RegionId:           tea.String(cluster.Region),
+		InstanceName:       tea.String(bastionName),
+		InstanceType:       insteaceType.InstanceTypeId,
+		SecurityGroupId:    tea.String(sgs[0].RefId),
+		VSwitchId:          tea.String(publicVSwitchs[0].RefId),
+		KeyPairName:        tea.String(keyPair.RefId),
+		ImageId:            image.ImageId,
+		InstanceChargeType: tea.String("PostPaid"),
+		SpotStrategy:       tea.String("NoSpot"),
 		SystemDisk: &ecs20140526.CreateInstanceRequestSystemDisk{
 			Size:     tea.Int32(30),
 			Category: tea.String("cloud_ssd"),
 		},
-		ImageId:            image.ImageId,
-		InstanceChargeType: tea.String("PostPaid"),
-		SpotStrategy:       tea.String("NoSpot"),
 		Tag: []*ecs20140526.CreateInstanceRequestTag{
 			{
 				Key:   tea.String(ResourceTypeKeyValue_NAME.String()),

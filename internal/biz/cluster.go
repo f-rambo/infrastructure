@@ -339,3 +339,35 @@ func (c *Cluster) GetZoneIDBySubnetRefID(subnetRefID string, zoneKey ResourceTyp
 func GetTags() map[ResourceTypeKeyValue]any {
 	return make(map[ResourceTypeKeyValue]any)
 }
+
+func (c *Cluster) CreateCluster() bool {
+	return c.Status == ClusterStatus_STARTING
+}
+
+func (c *Cluster) UpdateCluster() bool {
+	return c.Status == ClusterStatus_RUNNING
+}
+
+func (c *Cluster) DeleteCluster() bool {
+	return c.Status == ClusterStatus_STOPPING || c.Status == ClusterStatus_DELETED
+}
+
+func (g *NodeGroup) CreateOrUpdateNodeGroup() bool {
+	return g.TargetSize > 0
+}
+
+func (g *NodeGroup) DeleteNodeGroup() bool {
+	return g.TargetSize == 0
+}
+
+func (n *Node) CreateNode() bool {
+	return n.Status == NodeStatus_NODE_CREATING
+}
+
+func (n *Node) UpdateNode() bool {
+	return n.Status == NodeStatus_NODE_RUNNING || n.Status == NodeStatus_NODE_PENDING
+}
+
+func (n *Node) DeleteNode() bool {
+	return n.Status == NodeStatus_NODE_DELETING || n.Status == NodeStatus_NODE_DELETED
+}

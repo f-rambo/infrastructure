@@ -5,11 +5,11 @@ server:
   env: cluster
   http:
     network: "tcp"
-    addr: 0.0.0.0:8001
+    addr: 0.0.0.0:8002
     timeout: 1
   grpc:
     network: "tcp"
-    addr: 0.0.0.0:9001
+    addr: 0.0.0.0:9002
     timeout: 1
 log:
   max_size: 500

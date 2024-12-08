@@ -3,7 +3,6 @@ package interfaces
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 	"github.com/spf13/cast"
 	"golang.org/x/sync/errgroup"
 )
@@ -64,6 +64,9 @@ func NewClusterInterface(awsUc *biz.AwsCloudUsecase, gcpUc *biz.GoogleCloudUseca
 func (c *ClusterInterface) Start(ctx context.Context, cluster *biz.Cluster) (*biz.Cluster, error) {
 	if cluster.Type.IsCloud() {
 		return cluster, nil
+	}
+	if len(cluster.GetCloudResource(biz.ResourceType_AVAILABILITY_ZONES)) == 0 {
+		return cluster, errors.New("availability zones is empty")
 	}
 	var funcs []func(context.Context, *biz.Cluster) error
 	if cluster.Type == biz.ClusterType_AWS_EC2 {
@@ -136,14 +139,6 @@ func (c *ClusterInterface) Stop(ctx context.Context, cluster *biz.Cluster) (*biz
 			c.aliUc.DeleteNetwork,
 		}
 	}
-	if cluster.Type == biz.ClusterType_GCP_GKE {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.gcpUc.Connections,
-			c.gcpUc.ManageKubernetesCluster,
-			c.gcpUc.DeleteKeyPair,
-			c.gcpUc.DeleteNetwork,
-		}
-	}
 	if cluster.Type == biz.ClusterType_AWS_EKS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
@@ -170,7 +165,7 @@ func (c *ClusterInterface) Stop(ctx context.Context, cluster *biz.Cluster) (*biz
 }
 
 func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster) (*biz.Cluster, error) {
-	if cluster.Type.IsCloud() {
+	if !cluster.Type.IsCloud() {
 		return cluster, nil
 	}
 	if cluster.Type == biz.ClusterType_AWS_EC2 || cluster.Type == biz.ClusterType_AWS_EKS {
