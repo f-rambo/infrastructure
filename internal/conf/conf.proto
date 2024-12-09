@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+option go_package = "github.com/f-rambo/cloud-copilot/infrastructure/internal/conf;conf";
+
+message Bootstrap {
+  Server server = 1;
+  Log log = 2;
+}
+
+message Server {
+      string name = 1;
+      string version = 2;
+      GRPC grpc = 3;
+}
+
+message GRPC {
+      string network = 1;
+      string addr = 2;
+      int64 timeout = 3;
+}
+
+message Log {
+      int32 max_size = 1;
+      int32 max_backups = 2;
+      int32 max_age = 3;
+}
