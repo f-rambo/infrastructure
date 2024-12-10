@@ -56,13 +56,25 @@ func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster)
 		return response, nil
 	}
 	if cluster.Type == biz.ClusterType_AWS_EC2 || cluster.Type == biz.ClusterType_AWS_EKS {
-		err := c.awsUc.GetAvailabilityZones(ctx, cluster)
+		err := c.awsUc.Connections(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+		err = c.awsUc.GetAvailabilityZones(ctx, cluster)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_ECS || cluster.Type == biz.ClusterType_ALICLOUD_AKS {
-		err := c.aliUc.GetAvailabilityZones(ctx, cluster)
+		err := c.aliUc.Connections(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+		err = c.aliUc.CheckAccessIdAndKey(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+		err = c.aliUc.GetAvailabilityZones(ctx, cluster)
 		if err != nil {
 			return nil, err
 		}
@@ -71,7 +83,7 @@ func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster)
 	return response, nil
 }
 func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.ClusterInterface_StartServer) error {
-	if cluster.Type.IsCloud() {
+	if !cluster.Type.IsCloud() {
 		return errors.New("not support cloud provider")
 	}
 	if len(cluster.GetCloudResource(biz.ResourceType_AVAILABILITY_ZONES)) == 0 {
@@ -89,8 +101,8 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_ECS {
-		c.aliUc.Connections(cluster)
 		funcs = []func(context.Context, *biz.Cluster) error{
+			c.aliUc.Connections,
 			c.aliUc.CreateNetwork,
 			c.aliUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
@@ -108,8 +120,8 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_AKS {
-		c.aliUc.Connections(cluster)
 		funcs = []func(context.Context, *biz.Cluster) error{
+			c.aliUc.Connections,
 			c.aliUc.CreateNetwork,
 			c.aliUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
@@ -124,8 +136,9 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 	}
 	return stream.Send(cluster)
 }
+
 func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterInterface_StopServer) error {
-	if cluster.Type.IsCloud() {
+	if !cluster.Type.IsCloud() {
 		return errors.New("not support cloud provider")
 	}
 	var funcs []func(context.Context, *biz.Cluster) error
@@ -139,8 +152,8 @@ func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterI
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_ECS {
-		c.aliUc.Connections(cluster)
 		funcs = []func(context.Context, *biz.Cluster) error{
+			c.aliUc.Connections,
 			c.aliUc.ManageInstance,
 			c.aliUc.ManageBostionHost,
 			c.aliUc.DeleteKeyPair,
@@ -156,8 +169,8 @@ func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterI
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_AKS {
-		c.aliUc.Connections(cluster)
 		funcs = []func(context.Context, *biz.Cluster) error{
+			c.aliUc.Connections,
 			c.aliUc.ManageKubernetesCluster,
 			c.aliUc.DeleteKeyPair,
 			c.aliUc.DeleteNetwork,

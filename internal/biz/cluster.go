@@ -119,7 +119,19 @@ func (c *Cluster) GetCloudResourceByTags(resourceType ResourceType, tagKeyValues
 		resourceTagsMap := c.DecodeTags(resource.Tags)
 		match := true
 		for key, value := range tagKeyValues {
-			if resourceTagsMap[key] != value {
+			val, ok := resourceTagsMap[key]
+			if !ok {
+				match = false
+				break
+			}
+			if resourceTypeKeyValue, ok := value.(ResourceTypeKeyValue); ok {
+				if int32(resourceTypeKeyValue.Number()) != cast.ToInt32(val) {
+					match = false
+					break
+				}
+				continue
+			}
+			if cast.ToString(val) != cast.ToString(value) {
 				match = false
 				break
 			}

@@ -780,7 +780,7 @@ mvfile
 `
 	SystemInfoShell = `#!/bin/bash
 
-uuid=$(sudo dmidecode -s system-uuid)
+uuid=$(dmidecode -s system-uuid)
 
 os=$(uname -s)
 
