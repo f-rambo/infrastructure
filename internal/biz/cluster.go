@@ -40,7 +40,7 @@ func (c *Cluster) AddCloudResource(resource *CloudResource) {
 		c.CloudResources = make([]*CloudResource, 0)
 	}
 	if resource.Id == "" {
-		resource.Id = uuid.New().String()
+		resource.Id = uuid.NewString()
 	}
 	c.CloudResources = append(c.CloudResources, resource)
 }
@@ -55,7 +55,7 @@ func (c *Cluster) AddSubCloudResource(resourceType ResourceType, parentID string
 	}
 	resource.Type = resourceType
 	if resource.Id == "" {
-		resource.Id = uuid.New().String()
+		resource.Id = uuid.NewString()
 	}
 	cloudResource.SubResources = append(cloudResource.SubResources, resource)
 }

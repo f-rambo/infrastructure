@@ -1793,8 +1793,8 @@ func (a *AwsCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 		for _, sg := range cluster.SecurityGroups {
 			ipPermissionsArr = append(ipPermissionsArr, ec2Types.IpPermission{
 				IpProtocol: aws.String(sg.Protocol),
-				FromPort:   aws.Int32(sg.IngressPort),
-				ToPort:     aws.Int32(sg.EgressPort),
+				FromPort:   aws.Int32(sg.StartPort),
+				ToPort:     aws.Int32(sg.EndPort),
 				IpRanges:   []ec2Types.IpRange{{CidrIp: aws.String(sg.IpCidr)}},
 			})
 		}

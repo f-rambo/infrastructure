@@ -93,38 +93,38 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 	if cluster.Type == biz.ClusterType_AWS_EC2 {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
-			c.awsUc.CreateNetwork,
 			c.awsUc.SetByNodeGroups,
 			c.awsUc.ImportKeyPair,
-			c.awsUc.ManageInstance,
+			c.awsUc.CreateNetwork,
 			c.awsUc.ManageBostionHost,
+			c.awsUc.ManageInstance,
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_ECS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.aliUc.Connections,
-			c.aliUc.CreateNetwork,
 			c.aliUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
-			c.aliUc.ManageInstance,
+			c.aliUc.CreateNetwork,
 			c.aliUc.ManageBostionHost,
+			c.aliUc.ManageInstance,
 		}
 	}
 	if cluster.Type == biz.ClusterType_AWS_EKS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
-			c.awsUc.CreateNetwork,
 			c.awsUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
+			c.awsUc.CreateNetwork,
 			c.awsUc.ManageKubernetesCluster,
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD_AKS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.aliUc.Connections,
-			c.aliUc.CreateNetwork,
 			c.aliUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
+			c.aliUc.CreateNetwork,
 			c.aliUc.ManageKubernetesCluster,
 		}
 	}
