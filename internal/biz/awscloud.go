@@ -516,7 +516,6 @@ func (a *AwsCloudUsecase) SetByNodeGroups(ctx context.Context, cluster *Cluster)
 		}
 		ng.Image = aws.ToString(image.ImageId)
 		ng.ImageDescription = aws.ToString(image.Description)
-		ng.Arch = string(image.Architecture)
 		ng.DefaultUsername = a.determineUsername(aws.ToString(image.Name), aws.ToString(image.Description))
 		ng.RootDeviceName = aws.ToString(image.RootDeviceName)
 		for _, dataDeivce := range image.BlockDeviceMappings {
@@ -546,7 +545,6 @@ func (a *AwsCloudUsecase) SetByNodeGroups(ctx context.Context, cluster *Cluster)
 		if ng.Gpu != 0 && instanceInfo.GpuInfo != nil && len(instanceInfo.GpuInfo.Gpus) > 0 {
 			for _, g := range instanceInfo.GpuInfo.Gpus {
 				ng.Gpu += aws.ToInt32(g.Count)
-				ng.GpuSpec += fmt.Sprintf("-%s", aws.ToString(g.Name))
 			}
 		}
 		a.log.Info("instance type found: ", ng.InstanceType)
@@ -827,7 +825,6 @@ func (a *AwsCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 	if len(platformDetails) > 0 {
 		cluster.BostionHost.Os = strings.ToLower(platformDetails[0])
 	}
-	cluster.BostionHost.Arch = string(image.Architecture)
 	cluster.BostionHost.Image = aws.ToString(image.ImageId)
 	cluster.BostionHost.ImageDescription = aws.ToString(image.Description)
 

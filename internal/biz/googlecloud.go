@@ -116,7 +116,6 @@ func (g *GoogleCloudUsecase) SetByNodeGroups(ctx context.Context, cluster *Clust
 		ng.Os = "cos" // Container-Optimized OS
 		ng.Image = image.Name
 		ng.ImageDescription = image.Description
-		ng.Arch = "x86_64"         // COS is x86_64 only
 		ng.DefaultUsername = "cos" // COS uses "cos" as default user
 
 		// Skip if instance type is already set
@@ -153,20 +152,6 @@ func (g *GoogleCloudUsecase) SetByNodeGroups(ctx context.Context, cluster *Clust
 		ng.InstanceType = bestMatch.Name
 		ng.Cpu = int32(bestMatch.GuestCpus)
 		ng.Memory = int32(bestMatch.MemoryMb / 1024) // Convert MB to GB
-
-		// GPU handling (if required)
-		if ng.Gpu > 0 {
-			// Get available GPU types
-			acceleratorTypes, err := g.computeService.AcceleratorTypes.List(g.projectID, cluster.Region).Do()
-			if err != nil {
-				return errors.Wrap(err, "failed to list accelerator types")
-			}
-
-			// Find suitable GPU type (this is a simplified version)
-			if len(acceleratorTypes.Items) > 0 {
-				ng.GpuSpec = acceleratorTypes.Items[0].Name
-			}
-		}
 
 		g.log.Infof("Selected machine type %s for node group %s", ng.InstanceType, ng.Name)
 	}

@@ -253,7 +253,7 @@ func (c *Cluster) GenerateNodeGroupName(nodeGroup *NodeGroup) {
 		c.Name,
 		nodeGroup.Type.String(),
 		nodeGroup.Os,
-		nodeGroup.Arch,
+		nodeGroup.Arch.String(),
 		cast.ToString(nodeGroup.Cpu),
 		cast.ToString(nodeGroup.Memory),
 		cast.ToString(nodeGroup.Gpu),
@@ -445,7 +445,7 @@ func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Clus
 	if _, ok := ARCH_MAP[arch]; !ok {
 		return errors.New("bostion host arch is not supported")
 	}
-	cluster.BostionHost.Arch = ARCH_MAP[arch]
+	// cluster.BostionHost.Arch = ARCH_MAP[arch]
 	shellPath, err := utils.GetServerStorePathByNames(utils.ShellPackage)
 	if err != nil {
 		return err
@@ -480,6 +480,7 @@ func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Clus
 }
 
 func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluster) error {
+	// todo need fix
 	errGroup, _ := errgroup.WithContext(ctx)
 	shellPath, err := utils.GetServerStorePathByNames(utils.ShellPackage)
 	if err != nil {
@@ -508,16 +509,16 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 				switch key {
 				case "os":
 					nodegroup.Os = cast.ToString(val)
-				case "arch":
-					nodegroup.Arch = cast.ToString(val)
+				// case "arch":
+				// 	nodegroup.Arch = cast.ToString(val)
 				case "mem":
 					nodegroup.Memory = cast.ToInt32(val)
 				case "cpu":
 					nodegroup.Cpu = cast.ToInt32(val)
 				case "gpu":
 					nodegroup.Gpu = cast.ToInt32(val)
-				case "gpu_info":
-					nodegroup.GpuSpec = cast.ToString(val)
+				// case "gpu_info":
+				// 	nodegroup.GpuSpec = cast.ToString(val)
 				case "disk":
 					nodegroup.DataDiskSize = cast.ToInt32(val)
 				case "inner_ip":
