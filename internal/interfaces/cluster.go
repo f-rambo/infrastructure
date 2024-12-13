@@ -89,6 +89,7 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 	if len(cluster.GetCloudResource(biz.ResourceType_AVAILABILITY_ZONES)) == 0 {
 		return errors.New("availability zones is empty")
 	}
+	defer stream.Send(cluster)
 	var funcs []func(context.Context, *biz.Cluster) error
 	if cluster.Type == biz.ClusterType_AWS_EC2 {
 		funcs = []func(context.Context, *biz.Cluster) error{
@@ -134,13 +135,14 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 			return err
 		}
 	}
-	return stream.Send(cluster)
+	return nil
 }
 
 func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterInterface_StopServer) error {
 	if !cluster.Type.IsCloud() {
 		return errors.New("not support cloud provider")
 	}
+	defer stream.Send(cluster)
 	var funcs []func(context.Context, *biz.Cluster) error
 	if cluster.Type == biz.ClusterType_AWS_EC2 {
 		funcs = []func(context.Context, *biz.Cluster) error{
@@ -182,45 +184,50 @@ func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterI
 			return err
 		}
 	}
-	return stream.Send(cluster)
+	return nil
 }
 
 func (c *ClusterInterface) MigrateToBostionHost(cluster *biz.Cluster, stream clusterApi.ClusterInterface_MigrateToBostionHostServer) error {
+	defer stream.Send(cluster)
 	err := c.clusterUc.MigrateToBostionHost(stream.Context(), cluster)
 	if err != nil {
 		return err
 	}
-	return stream.Send(cluster)
+	return nil
 }
 
 func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clusterApi.ClusterInterface_GetNodesSystemInfoServer) error {
+	defer stream.Send(cluster)
 	err := c.clusterUc.GetNodesSystemInfo(stream.Context(), cluster)
 	if err != nil {
 		return err
 	}
-	return stream.Send(cluster)
+	return nil
 }
 
 func (c *ClusterInterface) Install(cluster *biz.Cluster, stream clusterApi.ClusterInterface_InstallServer) error {
+	defer stream.Send(cluster)
 	err := c.clusterUc.Install(stream.Context(), cluster)
 	if err != nil {
 		return err
 	}
-	return stream.Send(cluster)
+	return nil
 }
 
 func (c *ClusterInterface) UnInstall(cluster *biz.Cluster, stream clusterApi.ClusterInterface_UnInstallServer) error {
+	defer stream.Send(cluster)
 	err := c.clusterUc.UnInstall(stream.Context(), cluster)
 	if err != nil {
 		return err
 	}
-	return stream.Send(cluster)
+	return nil
 }
 
 func (c *ClusterInterface) HandlerNodes(cluster *biz.Cluster, stream clusterApi.ClusterInterface_HandlerNodesServer) error {
+	defer stream.Send(cluster)
 	err := c.clusterUc.HandlerNodes(stream.Context(), cluster)
 	if err != nil {
 		return err
 	}
-	return stream.Send(cluster)
+	return nil
 }

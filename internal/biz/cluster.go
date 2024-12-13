@@ -320,35 +320,20 @@ func (c *Cluster) GetNodeGroupByName(nodeGroupName string) *NodeGroup {
 	return nil
 }
 
-func (c *Cluster) DistributeNodePrivateSubnets(nodeIndex int) string {
+func (c *Cluster) DistributeNodePrivateSubnets(nodeIndex int) *CloudResource {
 	tags := GetTags()
 	tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
 	subnets := c.GetCloudResourceByTags(ResourceType_SUBNET, tags)
 	if len(subnets) == 0 {
-		return ""
+		return nil
 	}
 	nodeSize := len(c.Nodes)
 	subnetsSize := len(subnets)
 	if nodeSize <= subnetsSize {
-		return subnets[nodeIndex%subnetsSize].RefId
+		return subnets[nodeIndex%subnetsSize]
 	}
 	interval := nodeSize / subnetsSize
-	return subnets[(nodeIndex/interval)%subnetsSize].RefId
-}
-
-// get zone id by subnet ref id
-func (c *Cluster) GetZoneIDBySubnetRefID(subnetRefID string, zoneKey ResourceTypeKeyValue) string {
-	for _, subnet := range c.GetCloudResource(ResourceType_SUBNET) {
-		if subnet.RefId == subnetRefID {
-			tagMaps := c.DecodeTags(subnet.Tags)
-			if _, ok := tagMaps[zoneKey]; !ok {
-				return ""
-			}
-			return cast.ToString(tagMaps[zoneKey])
-
-		}
-	}
-	return ""
+	return subnets[(nodeIndex/interval)%subnetsSize]
 }
 
 func GetTags() map[ResourceTypeKeyValue]any {
@@ -487,14 +472,14 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 		return err
 	}
 	for _, node := range cluster.Nodes {
-		if node.InternalIp == "" || node.User == "" {
+		if node.Ip == "" || node.User == "" {
 			continue
 		}
 		nodegroup := &NodeGroup{ClusterId: cluster.Id, Id: uuid.New().String()}
 		node := node
 		errGroup.Go(func() error {
 			remoteBash := utils.NewRemoteBash(
-				utils.Server{Name: node.Name, Host: node.InternalIp, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
+				utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
 				c.log,
 			)
 			systemInfoOutput, err := remoteBash.Run("bash", utils.MergePath(shellPath, SystemInfoShell))
@@ -521,8 +506,8 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 				// 	nodegroup.GpuSpec = cast.ToString(val)
 				case "disk":
 					nodegroup.DataDiskSize = cast.ToInt32(val)
-				case "inner_ip":
-					node.InternalIp = cast.ToString(val)
+				case "ip":
+					node.Ip = cast.ToString(val)
 				}
 			}
 			cluster.GenerateNodeGroupName(nodegroup)
@@ -620,7 +605,7 @@ func (c *ClusterUsecase) UnInstall(ctx context.Context, cluster *Cluster) error 
 			continue
 		}
 		remoteBash := utils.NewRemoteBash(
-			utils.Server{Name: node.Name, Host: node.InternalIp, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
+			utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
 			c.log,
 		)
 		err := c.uninstallNode(remoteBash)
@@ -634,7 +619,7 @@ func (c *ClusterUsecase) UnInstall(ctx context.Context, cluster *Cluster) error 
 			continue
 		}
 		remoteBash := utils.NewRemoteBash(
-			utils.Server{Name: node.Name, Host: node.InternalIp, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
+			utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
 			c.log,
 		)
 		err := c.uninstallNode(remoteBash)
@@ -649,7 +634,7 @@ func (c *ClusterUsecase) UnInstall(ctx context.Context, cluster *Cluster) error 
 func (c *ClusterUsecase) HandlerNodes(ctx context.Context, cluster *Cluster) error {
 	for _, node := range cluster.Nodes {
 		remoteBash := utils.NewRemoteBash(
-			utils.Server{Name: node.Name, Host: node.InternalIp, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
+			utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
 			c.log,
 		)
 		if node.Status == NodeStatus_NODE_CREATING {

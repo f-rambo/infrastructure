@@ -744,8 +744,8 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 			if node.Status != NodeStatus_NODE_CREATING || node.NodeGroupId != nodeGroup.Id {
 				continue
 			}
-			privateSubnetID := cluster.DistributeNodePrivateSubnets(index)
-			instancesInput.SubnetId = aws.String(privateSubnetID)
+			privateSubnet := cluster.DistributeNodePrivateSubnets(index)
+			instancesInput.SubnetId = aws.String(privateSubnet.RefId)
 			instancesInput.TagSpecifications = []ec2Types.TagSpecification{
 				{
 					ResourceType: ec2Types.ResourceTypeInstance,
@@ -759,8 +759,7 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 			for _, instance := range instancesOutput.Instances {
 				instanceIds = append(instanceIds, aws.ToString(instance.InstanceId))
 				node.InstanceId = aws.ToString(instance.InstanceId)
-				node.InternalIp = aws.ToString(instance.PrivateIpAddress)
-				node.ExternalIp = aws.ToString(instance.PublicIpAddress)
+				node.Ip = aws.ToString(instance.PrivateIpAddress)
 				for _, blockDevice := range instance.BlockDeviceMappings {
 					cluster.AddCloudResource(&CloudResource{
 						Name:         aws.ToString(blockDevice.DeviceName),
