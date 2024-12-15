@@ -136,236 +136,6 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 	return nil
 }
 
-func (a *AliCloudUsecase) ManageKubernetesCluster(ctx context.Context, cluster *Cluster) error {
-	// Check if cluster already exists
-	clusterCreted := false
-	nodepools := make([]*cs20151215.DescribeClusterNodePoolsResponseBodyNodepools, 0)
-	clusters, err := a.csClient.DescribeClustersV1(&cs20151215.DescribeClustersV1Request{
-		Name: tea.String(cluster.Name),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to describe clusters")
-	}
-	for _, c := range clusters.Body.Clusters {
-		if tea.StringValue(c.Name) == cluster.Name {
-			clusterCreted = true
-			nodePoolRes, err := a.csClient.DescribeClusterNodePools(c.ClusterId, &cs20151215.DescribeClusterNodePoolsRequest{})
-			if err != nil {
-				return errors.Wrap(err, "failed to describe cluster node pools")
-			}
-			nodepools = nodePoolRes.Body.Nodepools
-			break
-		}
-	}
-	if clusterCreted && cluster.Status == ClusterStatus_STOPPING {
-		// delete node pool
-		for _, nodePool := range nodepools {
-			_, err = a.csClient.DeleteClusterNodepool(&cluster.CloudClusterId, nodePool.NodepoolInfo.NodepoolId, &cs20151215.DeleteClusterNodepoolRequest{})
-			if err != nil {
-				return errors.Wrap(err, "failed to delete cluster node pool")
-			}
-		}
-		// delete cluster
-		_, err = a.csClient.DeleteCluster(&cluster.CloudClusterId, &cs20151215.DeleteClusterRequest{})
-		if err != nil {
-			return errors.Wrap(err, "failed to delete cluster")
-		}
-		cluster.Status = ClusterStatus_DELETED
-		return nil
-	}
-
-	// clear node pool
-	for _, nodeGroup := range cluster.NodeGroups {
-		nodeGroupExits := false
-		for _, nodePool := range nodepools {
-			if tea.StringValue(nodePool.NodepoolInfo.NodepoolId) == nodeGroup.CloudNodeGroupId {
-				nodeGroupExits = true
-				break
-			}
-		}
-		if !nodeGroupExits {
-			nodeGroup.CloudNodeGroupId = ""
-		}
-	}
-
-	// Get VPC and VSwitches
-	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
-	if vpc == nil {
-		return errors.New("vpc not found")
-	}
-
-	// Get worker node VSwitches
-	subnets := cluster.GetCloudResourceByTags(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PRIVATE})
-	if len(subnets) == 0 {
-		return errors.New("no vswitches found for worker nodes")
-	}
-	subnetIds := make([]string, 0)
-	zoneIds := make([]string, 0)
-	for _, subnet := range subnets {
-		subnetIds = append(subnetIds, subnet.RefId)
-		subnetTags := cluster.DecodeTags(subnet.Tags)
-		zoneIds = append(zoneIds, cast.ToString(subnetTags[ResourceTypeKeyValue_ZONE]))
-	}
-
-	// Get security groups
-	sgs := cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP,
-		map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_SECURITY_GROUP_TYPE: ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER})
-	if len(sgs) == 0 {
-		return errors.New("security group not found")
-	}
-	sgsIDs := make([]string, 0)
-	for _, sg := range sgs {
-		sgsIDs = append(sgsIDs, sg.RefId)
-	}
-
-	// Get key pair
-	keyPair := cluster.GetSingleCloudResource(ResourceType_KEY_PAIR)
-	if keyPair == nil {
-		return errors.New("key pair not found")
-	}
-
-	// Get LB
-	lb := cluster.GetSingleCloudResource(ResourceType_LOAD_BALANCER)
-	if lb == nil {
-		return errors.New("load balancer not found")
-	}
-
-	if !clusterCreted {
-		// Create cluster request
-		createReq := &cs20151215.CreateClusterRequest{
-			Name:                 tea.String(cluster.Name),
-			RegionId:             tea.String(cluster.Region),
-			ClusterType:          tea.String("ManagedKubernetes"), // Managed Kubernetes cluster
-			ClusterSpec:          tea.String("ack.pro.small"),
-			KubernetesVersion:    tea.String(cluster.Version),
-			Vpcid:                tea.String(vpc.RefId),
-			ServiceCidr:          tea.String(ServiceCIDR),
-			ContainerCidr:        tea.String(PodCIDR),
-			SnatEntry:            tea.Bool(false),
-			EndpointPublicAccess: tea.Bool(false),
-			SshFlags:             tea.Bool(false),
-			ClusterDomain:        tea.String(cluster.Name),
-			ProxyMode:            tea.String("ipvs"),
-			VswitchIds:           tea.StringSlice(subnetIds),
-			DeletionProtection:   tea.Bool(false),
-			ChargeType:           tea.String("PostPaid"),
-			ZoneIds:              tea.StringSlice(zoneIds),
-			LoadBalancerId:       tea.String(lb.RefId),
-			KeyPair:              tea.String(keyPair.RefId),
-			Runtime: &cs20151215.Runtime{
-				Name: tea.String("containerd"),
-			},
-			Addons: []*cs20151215.Addon{
-				{
-					Name:   tea.String("Flannel"),
-					Config: tea.String(""),
-				},
-			},
-			OperationPolicy: &cs20151215.CreateClusterRequestOperationPolicy{
-				ClusterAutoUpgrade: &cs20151215.CreateClusterRequestOperationPolicyClusterAutoUpgrade{
-					Enabled: tea.Bool(false),
-				},
-			},
-			Tags: []*cs20151215.Tag{
-				{
-					Key:   tea.String("Name"),
-					Value: tea.String(cluster.Name),
-				},
-			},
-		}
-
-		// Create cluster
-		createClusterRes, err := a.csClient.CreateCluster(createReq)
-		if err != nil {
-			return errors.Wrap(err, "failed to create kubernetes cluster")
-		}
-		cluster.CloudClusterId = tea.StringValue(createClusterRes.Body.ClusterId)
-		a.log.Infof("kubernetes cluster %s created successfully", cluster.Name)
-	}
-
-	// create node pool
-	for _, nodeGroup := range cluster.NodeGroups {
-		if nodeGroup.CloudNodeGroupId != "" {
-			nodePoolReq := &cs20151215.CreateClusterNodePoolRequest{
-				NodepoolInfo: &cs20151215.CreateClusterNodePoolRequestNodepoolInfo{
-					Name: tea.String(nodeGroup.Name),
-					Type: tea.String("ess"),
-				},
-				AutoScaling: &cs20151215.CreateClusterNodePoolRequestAutoScaling{
-					Enable: tea.Bool(false),
-				},
-				Management: &cs20151215.CreateClusterNodePoolRequestManagement{
-					Enable: tea.Bool(false),
-				},
-				ScalingGroup: &cs20151215.CreateClusterNodePoolRequestScalingGroup{
-					InstanceChargeType: tea.String("PostPaid"),
-					VswitchIds:         tea.StringSlice(subnetIds),
-					InstanceTypes:      tea.StringSlice([]string{nodeGroup.InstanceType}),
-					SpotStrategy:       tea.String("NoSpot"),
-					ImageId:            tea.String(nodeGroup.Image),
-					SystemDiskCategory: tea.String("cloud"),
-					SystemDiskSize:     tea.Int64(int64(nodeGroup.SystemDiskSize)),
-					SecurityGroupIds:   tea.StringSlice(sgsIDs),
-					KeyPair:            tea.String(keyPair.RefId),
-					DesiredSize:        tea.Int64(int64(nodeGroup.TargetSize)),
-				},
-			}
-			if nodeGroup.DataDiskSize > 0 {
-				nodePoolReq.ScalingGroup.DataDisks = []*cs20151215.DataDisk{
-					{
-						Category:    tea.String("cloud"),
-						Size:        tea.Int64(int64(nodeGroup.DataDiskSize)),
-						Encrypted:   tea.String("false"),
-						AutoFormat:  tea.Bool(true),
-						FileSystem:  tea.String("ext4"),
-						MountTarget: tea.String("/data"),
-						Device:      tea.String(nodeGroup.DataDeviceName),
-					},
-				}
-			}
-			nodePoolRes, err := a.csClient.CreateClusterNodePool(tea.String(cluster.CloudClusterId), nodePoolReq)
-			if err != nil {
-				return errors.Wrap(err, "failed to create cluster node pool")
-			}
-			nodeGroup.CloudNodeGroupId = tea.StringValue(nodePoolRes.Body.NodepoolId)
-		} else {
-			modifyNodePoolReq := &cs20151215.ModifyClusterNodePoolRequest{
-				ScalingGroup: &cs20151215.ModifyClusterNodePoolRequestScalingGroup{
-					InstanceChargeType: tea.String("PostPaid"),
-					VswitchIds:         tea.StringSlice(subnetIds),
-					InstanceTypes:      tea.StringSlice([]string{nodeGroup.InstanceType}),
-					SpotStrategy:       tea.String("NoSpot"),
-					ImageId:            tea.String(nodeGroup.Image),
-					SystemDiskCategory: tea.String("cloud"),
-					SystemDiskSize:     tea.Int64(int64(nodeGroup.SystemDiskSize)),
-					KeyPair:            tea.String(keyPair.RefId),
-					DesiredSize:        tea.Int64(int64(nodeGroup.TargetSize)),
-				},
-			}
-			if nodeGroup.DataDiskSize > 0 {
-				modifyNodePoolReq.ScalingGroup.DataDisks = []*cs20151215.DataDisk{
-					{
-						Category:    tea.String("cloud"),
-						Size:        tea.Int64(int64(nodeGroup.DataDiskSize)),
-						Encrypted:   tea.String("false"),
-						AutoFormat:  tea.Bool(true),
-						FileSystem:  tea.String("ext4"),
-						MountTarget: tea.String("/data"),
-						Device:      tea.String(nodeGroup.DataDeviceName),
-					},
-				}
-			}
-			modifyNodePoolRes, err := a.csClient.ModifyClusterNodePool(tea.String(cluster.CloudClusterId), tea.String(nodeGroup.CloudNodeGroupId), modifyNodePoolReq)
-			if err != nil {
-				return errors.Wrap(err, "failed to modify cluster node pool")
-			}
-			nodeGroup.CloudNodeGroupId = tea.StringValue(modifyNodePoolRes.Body.NodepoolId)
-		}
-		log.Infof("kubernetes node pool %s created successfully", nodeGroup.Name)
-	}
-	return nil
-}
-
 func (a *AliCloudUsecase) CreateNetwork(ctx context.Context, cluster *Cluster) error {
 	fs := []func(context.Context, *Cluster) error{
 		a.createVPC,
@@ -374,6 +144,7 @@ func (a *AliCloudUsecase) CreateNetwork(ctx context.Context, cluster *Cluster) e
 		a.createNatGateways,
 		a.createRouteTables,
 		a.createSecurityGroup,
+		a.createSLB,
 	}
 	for _, f := range fs {
 		if err := f(ctx, cluster); err != nil {
@@ -901,6 +672,30 @@ func (a *AliCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluste
 }
 
 func (a *AliCloudUsecase) DeleteNetwork(ctx context.Context, cluster *Cluster) error {
+	// Delete SLB
+	for _, v := range cluster.GetCloudResource(ResourceType_LOAD_BALANCER) {
+		res, err := a.slbClient.DescribeLoadBalancers(&slb20140515.DescribeLoadBalancersRequest{
+			RegionId:       tea.String(cluster.Region),
+			LoadBalancerId: tea.String(v.RefId),
+			PageNumber:     tea.Int32(1),
+			PageSize:       tea.Int32(1),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to describe load balancers")
+		}
+		if tea.Int32Value(res.Body.TotalCount) == 0 {
+			cluster.DeleteCloudResourceByID(ResourceType_LOAD_BALANCER, v.Id)
+			continue
+		}
+		_, err = a.slbClient.DeleteLoadBalancer(&slb20140515.DeleteLoadBalancerRequest{
+			RegionId:       tea.String(cluster.Region),
+			LoadBalancerId: tea.String(v.RefId),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to delete SLB")
+		}
+		cluster.DeleteCloudResourceByID(ResourceType_LOAD_BALANCER, v.Id)
+	}
 	// delete sg
 	for _, sg := range cluster.GetCloudResource(ResourceType_SECURITY_GROUP) {
 		res, err := a.ecsClient.DescribeSecurityGroups(&ecs20140526.DescribeSecurityGroupsRequest{
@@ -1001,7 +796,7 @@ func (a *AliCloudUsecase) DeleteNetwork(ctx context.Context, cluster *Cluster) e
 		if err != nil {
 			a.log.Warnf("failed to delete NAT Gateway %s: %v", nat.RefId, err)
 		}
-		time.Sleep(time.Second * 3 * TimeOutSecond)
+		time.Sleep(time.Second * 5 * TimeOutSecond)
 		cluster.DeleteCloudResourceByID(ResourceType_NAT_GATEWAY, nat.Id)
 	}
 
@@ -1314,81 +1109,6 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 	return nil
 }
 
-func (a *AliCloudUsecase) CreateInternetGateway(ctx context.Context, cluster *Cluster) error {
-	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
-	nextToken := ""
-	gateways := make([]*vpc20160428.ListIpv4GatewaysResponseBodyIpv4GatewayModels, 0)
-	for {
-		gatewayRes, err := a.vpcClient.ListIpv4Gateways(&vpc20160428.ListIpv4GatewaysRequest{
-			VpcId:     tea.String(vpc.RefId),
-			NextToken: tea.String(nextToken),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to list internet gateways")
-		}
-		gateways = append(gateways, gatewayRes.Body.Ipv4GatewayModels...)
-		if gatewayRes.Body.NextToken == nil {
-			break
-		}
-		nextToken = tea.StringValue(gatewayRes.Body.NextToken)
-	}
-	for _, gateway := range gateways {
-		if gateway.Ipv4GatewayId == nil {
-			continue
-		}
-		if cluster.GetCloudResourceByRefID(ResourceType_INTERNET_GATEWAY, tea.StringValue(gateway.Ipv4GatewayId)) != nil {
-			a.log.Infof("internet gateway %s already exists", tea.StringValue(gateway.Ipv4GatewayId))
-			continue
-		}
-		name := fmt.Sprintf("%s-igw", cluster.Name)
-		tags := GetTags()
-		tags[ResourceTypeKeyValue_NAME] = name
-		a.createVpcTags(cluster.Region, tea.StringValue(gateway.Ipv4GatewayId), "IPV4GATEWAY", tags)
-		cluster.AddCloudResource(&CloudResource{
-			Name:         name,
-			RefId:        tea.StringValue(gateway.Ipv4GatewayId),
-			Tags:         cluster.EncodeTags(tags),
-			AssociatedId: vpc.RefId,
-			Type:         ResourceType_INTERNET_GATEWAY,
-		})
-		a.log.Infof("internet gateway %s already exists", name)
-		return nil
-	}
-	// Create Internet Gateway if it doesn't exist
-	name := fmt.Sprintf("%s-igw", cluster.Name)
-	gatewayRes, err := a.vpcClient.CreateIpv4Gateway(&vpc20160428.CreateIpv4GatewayRequest{
-		RegionId:        tea.String(cluster.Region),
-		VpcId:           tea.String(vpc.RefId),
-		Ipv4GatewayName: tea.String(name),
-		Ipv4GatewayDescription: tea.String(fmt.Sprintf(
-			"It's from %s",
-			cluster.Name,
-		)),
-		Tag: []*vpc20160428.CreateIpv4GatewayRequestTag{
-			{Key: tea.String(ResourceTypeKeyValue_NAME.String()), Value: tea.String(name)},
-		},
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to create internet gateway")
-	}
-	_, err = a.vpcClient.EnableVpcIpv4Gateway(&vpc20160428.EnableVpcIpv4GatewayRequest{
-		Ipv4GatewayId: gatewayRes.Body.Ipv4GatewayId,
-		RegionId:      tea.String(cluster.Region),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to enable internet gateway")
-	}
-	cluster.AddCloudResource(&CloudResource{
-		Name:         name,
-		RefId:        tea.StringValue(gatewayRes.Body.Ipv4GatewayId),
-		Tags:         cluster.EncodeTags(map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: name}),
-		AssociatedId: vpc.RefId,
-		Type:         ResourceType_INTERNET_GATEWAY,
-	})
-	a.log.Infof("internet gateway %s created", name)
-	return nil
-}
-
 func (a *AliCloudUsecase) createEips(_ context.Context, cluster *Cluster) error {
 	// Get Elastic IP
 	eips := make([]*vpc20160428.DescribeEipAddressesResponseBodyEipAddressesEipAddress, 0)
@@ -1466,7 +1186,7 @@ func (a *AliCloudUsecase) createEips(_ context.Context, cluster *Cluster) error 
 			Value: tea.StringValue(eipRes.Body.EipAddress),
 			Tags:  cluster.EncodeTags(tags),
 		})
-		a.log.Infof("elastic ip %s allocated", tea.StringValue(eipRes.Body.EipAddress))
+		a.log.Infof("elastic ip %s allocated for zone %s", tea.StringValue(eipRes.Body.EipAddress), az.RefId)
 	}
 	// wait eip status to be available
 	timeOutNumber := 0
@@ -2019,39 +1739,17 @@ func (a *AliCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 	return nil
 }
 
-func (a *AliCloudUsecase) CreateSLB(ctx context.Context, cluster *Cluster) error {
+func (a *AliCloudUsecase) createSLB(_ context.Context, cluster *Cluster) error {
 	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
 	if vpc == nil {
 		return errors.New("vpc not found")
 	}
-
 	// Check if SLB already exists
 	name := fmt.Sprintf("%s-slb", cluster.Name)
 	if cluster.GetCloudResourceByName(ResourceType_LOAD_BALANCER, name) != nil {
 		a.log.Infof("slb %s already exists", name)
 		return nil
 	}
-
-	// Get public VSwitches
-	publicVSwitchIDs := make([]string, 0)
-	for _, subnet := range cluster.GetCloudResource(ResourceType_SUBNET) {
-		subnetMapTags := cluster.DecodeTags(subnet.Tags)
-		if typeVal, ok := subnetMapTags[ResourceTypeKeyValue_ACCESS]; !ok || typeVal != ResourceTypeKeyValue_ACCESS_PUBLIC {
-			continue
-		}
-		publicVSwitchIDs = append(publicVSwitchIDs, subnet.RefId)
-	}
-	if len(publicVSwitchIDs) == 0 {
-		return errors.New("failed to get public vswitches")
-	}
-
-	// Get security groups
-	sgs := cluster.GetCloudResourceByTags(ResourceType_SECURITY_GROUP,
-		map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_SECURITY_GROUP_TYPE: ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER})
-	if len(sgs) == 0 {
-		return errors.New("failed to get security group")
-	}
-
 	// List existing SLBs
 	var pageNumber int32 = 1
 	for {
@@ -2064,7 +1762,6 @@ func (a *AliCloudUsecase) CreateSLB(ctx context.Context, cluster *Cluster) error
 		if err != nil {
 			return errors.Wrap(err, "failed to describe load balancers")
 		}
-
 		for _, lb := range loadBalancers.Body.LoadBalancers.LoadBalancer {
 			if tea.StringValue(lb.LoadBalancerName) == name {
 				if cluster.GetCloudResourceByRefID(ResourceType_LOAD_BALANCER, tea.StringValue(lb.LoadBalancerId)) != nil {
@@ -2087,74 +1784,24 @@ func (a *AliCloudUsecase) CreateSLB(ctx context.Context, cluster *Cluster) error
 	}
 
 	// Create SLB
-	tags := GetTags()
-	tags[ResourceTypeKeyValue_NAME] = name
-	createSLBReq := &slb20140515.CreateLoadBalancerRequest{
-		RegionId:         tea.String(cluster.Region),
-		VpcId:            tea.String(vpc.RefId),
-		VSwitchId:        tea.String(publicVSwitchIDs[0]), // Use first public VSwitch
-		LoadBalancerName: tea.String(name),
-		AddressType:      tea.String("internet"),
-		LoadBalancerSpec: tea.String("slb.s2.small"),
-		PayType:          tea.String("PayAsYouGo"),
-	}
-
-	slbRes, err := a.slbClient.CreateLoadBalancer(createSLBReq)
+	slbRes, err := a.slbClient.CreateLoadBalancer(&slb20140515.CreateLoadBalancerRequest{
+		RegionId:           tea.String(cluster.Region),
+		VpcId:              tea.String(vpc.RefId),
+		LoadBalancerName:   tea.String(name),
+		PayType:            tea.String("PayOnDemand"),
+		AddressType:        tea.String("internet"),
+		InternetChargeType: tea.String("paybytraffic"),
+		InstanceChargeType: tea.String("PayByCLCU"),
+	})
 	if err != nil {
 		return errors.Wrap(err, "failed to create SLB")
 	}
-
-	// Add tags to SLB
-	err = a.createSlbTag(cluster.Region, tea.StringValue(slbRes.Body.LoadBalancerId), "instance", tags)
-	if err != nil {
-		return errors.Wrap(err, "failed to tag SLB")
-	}
-
 	cluster.AddCloudResource(&CloudResource{
 		Name:  name,
 		RefId: tea.StringValue(slbRes.Body.LoadBalancerId),
-		Tags:  cluster.EncodeTags(tags),
 		Type:  ResourceType_LOAD_BALANCER,
+		Value: tea.StringValue(slbRes.Body.Address),
 	})
-
-	vserverGroupName := fmt.Sprintf("%s-vserver-group", cluster.Name)
-	vserverGroupReq := &slb20140515.CreateVServerGroupRequest{
-		RegionId:         tea.String(cluster.Region),
-		LoadBalancerId:   slbRes.Body.LoadBalancerId,
-		VServerGroupName: tea.String(vserverGroupName),
-	}
-
-	vserverGroupRes, err := a.slbClient.CreateVServerGroup(vserverGroupReq)
-	if err != nil {
-		return errors.Wrap(err, "failed to create vserver group")
-	}
-	a.log.Infof("vserver group %s created", tea.StringValue(vserverGroupRes.Body.VServerGroupId))
-
-	// Create listener
-	listenerReq := &slb20140515.CreateLoadBalancerTCPListenerRequest{
-		RegionId:          tea.String(cluster.Region),
-		LoadBalancerId:    slbRes.Body.LoadBalancerId,
-		ListenerPort:      tea.Int32(6443),
-		BackendServerPort: tea.Int32(6443),
-		VServerGroupId:    vserverGroupRes.Body.VServerGroupId,
-		Bandwidth:         tea.Int32(-1), // Unlimited for PayAsYouGo
-	}
-
-	_, err = a.slbClient.CreateLoadBalancerTCPListener(listenerReq)
-	if err != nil {
-		return errors.Wrap(err, "failed to create listener")
-	}
-
-	// Start the listener
-	_, err = a.slbClient.StartLoadBalancerListener(&slb20140515.StartLoadBalancerListenerRequest{
-		RegionId:       tea.String(cluster.Region),
-		LoadBalancerId: slbRes.Body.LoadBalancerId,
-		ListenerPort:   tea.Int32(6443),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to start listener")
-	}
-
 	return nil
 }
 
@@ -2361,26 +2008,6 @@ func (a *AliCloudUsecase) createEcsTag(regionID, resourceID, resourceType string
 	})
 	if err != nil {
 		return errors.Wrap(err, "failed to tag ecs")
-	}
-	return nil
-}
-
-func (a *AliCloudUsecase) createSlbTag(regionID, resourceID, resourceType string, tags map[ResourceTypeKeyValue]any) error {
-	slbTags := make([]*slb20140515.TagResourcesRequestTag, 0)
-	for key, value := range tags {
-		slbTags = append(slbTags, &slb20140515.TagResourcesRequestTag{
-			Key:   tea.String(key.String()),
-			Value: tea.String(cast.ToString(value)),
-		})
-	}
-	_, err := a.slbClient.TagResources(&slb20140515.TagResourcesRequest{
-		RegionId:     tea.String(regionID),
-		ResourceType: tea.String(resourceType),
-		ResourceId:   tea.StringSlice([]string{resourceID}),
-		Tag:          slbTags,
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to tag slb")
 	}
 	return nil
 }

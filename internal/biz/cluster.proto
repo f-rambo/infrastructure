@@ -4,6 +4,13 @@ package biz.cluster;
 
 option go_package = "github.com/f-rambo/cloud-copilot/infrastructure/internal/biz;";
 
+enum ClusterType {
+      ClusterType_UNSPECIFIED = 0;
+      LOCAL = 1;
+      AWS = 2;
+      ALICLOUD = 3;
+}
+
 enum ClusterStatus {
       UNSPECIFIED = 0;
       RUNNING = 1;
@@ -11,17 +18,6 @@ enum ClusterStatus {
       STARTING = 3;
       STOPPING = 4;
       STOPPED = 5;
-}
-
-enum ClusterType {
-      ClusterType_UNSPECIFIED = 0;
-      LOCAL = 1;
-      AWS_EC2 = 2;
-      AWS_EKS = 3;
-      ALICLOUD_ECS = 4;
-      ALICLOUD_AKS = 5;
-      GCP_GKE = 6;
-      KUBERNETES = 7;
 }
 
 enum ClusterLevel {

@@ -50,12 +50,16 @@ func (c *ClusterInterface) Ping(args *clusterApi.PingMessage, stream clusterApi.
 	return nil
 }
 
+func (c *ClusterInterface) permissionChecking(_ *biz.Cluster) error {
+	return nil
+}
+
 func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster) (*clusterApi.CloudResources, error) {
 	response := &clusterApi.CloudResources{Resources: make([]*biz.CloudResource, 0)}
 	if !cluster.Type.IsCloud() {
 		return response, nil
 	}
-	if cluster.Type == biz.ClusterType_AWS_EC2 || cluster.Type == biz.ClusterType_AWS_EKS {
+	if cluster.Type == biz.ClusterType_AWS {
 		err := c.awsUc.Connections(ctx, cluster)
 		if err != nil {
 			return nil, err
@@ -65,7 +69,7 @@ func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster)
 			return nil, err
 		}
 	}
-	if cluster.Type == biz.ClusterType_ALICLOUD_ECS || cluster.Type == biz.ClusterType_ALICLOUD_AKS {
+	if cluster.Type == biz.ClusterType_ALICLOUD {
 		err := c.aliUc.Connections(ctx, cluster)
 		if err != nil {
 			return nil, err
@@ -83,6 +87,9 @@ func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster)
 	return response, nil
 }
 func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.ClusterInterface_StartServer) error {
+	if err := c.permissionChecking(cluster); err != nil {
+		return err
+	}
 	if !cluster.Type.IsCloud() {
 		return errors.New("not support cloud provider")
 	}
@@ -91,7 +98,7 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 	}
 	defer stream.Send(cluster)
 	var funcs []func(context.Context, *biz.Cluster) error
-	if cluster.Type == biz.ClusterType_AWS_EC2 {
+	if cluster.Type == biz.ClusterType_AWS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
 			c.awsUc.SetByNodeGroups,
@@ -101,7 +108,7 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 			c.awsUc.ManageInstance,
 		}
 	}
-	if cluster.Type == biz.ClusterType_ALICLOUD_ECS {
+	if cluster.Type == biz.ClusterType_ALICLOUD {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.aliUc.Connections,
 			c.aliUc.SetByNodeGroups,
@@ -109,24 +116,6 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 			c.aliUc.CreateNetwork,
 			c.aliUc.ManageBostionHost,
 			c.aliUc.ManageInstance,
-		}
-	}
-	if cluster.Type == biz.ClusterType_AWS_EKS {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.awsUc.Connections,
-			c.awsUc.SetByNodeGroups,
-			c.aliUc.ImportKeyPair,
-			c.awsUc.CreateNetwork,
-			c.awsUc.ManageKubernetesCluster,
-		}
-	}
-	if cluster.Type == biz.ClusterType_ALICLOUD_AKS {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.aliUc.Connections,
-			c.aliUc.SetByNodeGroups,
-			c.aliUc.ImportKeyPair,
-			c.aliUc.CreateNetwork,
-			c.aliUc.ManageKubernetesCluster,
 		}
 	}
 	for _, f := range funcs {
@@ -139,12 +128,15 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 }
 
 func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterInterface_StopServer) error {
+	if err := c.permissionChecking(cluster); err != nil {
+		return err
+	}
 	if !cluster.Type.IsCloud() {
 		return errors.New("not support cloud provider")
 	}
 	defer stream.Send(cluster)
 	var funcs []func(context.Context, *biz.Cluster) error
-	if cluster.Type == biz.ClusterType_AWS_EC2 {
+	if cluster.Type == biz.ClusterType_AWS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
 			c.awsUc.ManageInstance,
@@ -153,27 +145,11 @@ func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterI
 			c.awsUc.DeleteNetwork,
 		}
 	}
-	if cluster.Type == biz.ClusterType_ALICLOUD_ECS {
+	if cluster.Type == biz.ClusterType_ALICLOUD {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.aliUc.Connections,
 			c.aliUc.ManageInstance,
 			c.aliUc.ManageBostionHost,
-			c.aliUc.DeleteKeyPair,
-			c.aliUc.DeleteNetwork,
-		}
-	}
-	if cluster.Type == biz.ClusterType_AWS_EKS {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.awsUc.Connections,
-			c.awsUc.ManageKubernetesCluster,
-			c.awsUc.DeleteKeyPair,
-			c.awsUc.DeleteNetwork,
-		}
-	}
-	if cluster.Type == biz.ClusterType_ALICLOUD_AKS {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.aliUc.Connections,
-			c.aliUc.ManageKubernetesCluster,
 			c.aliUc.DeleteKeyPair,
 			c.aliUc.DeleteNetwork,
 		}

@@ -265,10 +265,6 @@ func (c ClusterType) IsCloud() bool {
 	return c != ClusterType_LOCAL
 }
 
-func (c ClusterType) IsIntegratedCloud() bool {
-	return c == ClusterType_AWS_EKS || c == ClusterType_ALICLOUD_AKS
-}
-
 func (ng *NodeGroup) SetTargetSize(size int32) {
 	ng.TargetSize = size
 }
