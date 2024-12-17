@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +21,21 @@ func InArray(item string, arr []string) bool {
 		}
 	}
 	return false
+}
+
+func InArrayInt32(item int32, arr []int32) bool {
+	for _, v := range arr {
+		if v == item {
+			return true
+		}
+	}
+	return false
+}
+
+func Md5(str string) string {
+	h := md5.New()
+	h.Write([]byte(str))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func DecodeYaml(yamlContent string, keyVal map[string]string) string {

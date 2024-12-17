@@ -2,8 +2,8 @@ package biz
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -93,10 +93,36 @@ func (a *AliCloudUsecase) CheckAccessIdAndKey(ctx context.Context, cluster *Clus
 	return nil
 }
 
+func (a *AliCloudUsecase) GetAvailabilityRegions(ctx context.Context, cluster *Cluster) error {
+	res, err := a.ecsClient.DescribeRegions(&ecs20140526.DescribeRegionsRequest{
+		AcceptLanguage:     tea.String("zh-CN"),
+		InstanceChargeType: tea.String("PostPaid"),
+		ResourceType:       tea.String("instance"),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to describe regions")
+	}
+	for _, v := range res.Body.Regions.Region {
+		if tea.StringValue(v.Status) != "available" {
+			continue
+		}
+		cluster.AddCloudResource(&CloudResource{
+			Type:  ResourceType_REGION,
+			RefId: tea.StringValue(v.RegionId),
+			Name:  tea.StringValue(v.LocalName),
+			Value: tea.StringValue(v.RegionEndpoint),
+		})
+	}
+	return nil
+}
+
 func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Cluster) error {
+	if cluster.Region == "" {
+		cluster.Region = alicloudDefaultRegion
+	}
 	zonesRes, err := a.ecsClient.DescribeZones(&ecs20140526.DescribeZonesRequest{
 		AcceptLanguage:     tea.String("zh-CN"),
-		RegionId:           tea.String(os.Getenv(ALICLOUD_REGION)),
+		RegionId:           tea.String(cluster.Region),
 		InstanceChargeType: tea.String("PostPaid"),
 		SpotStrategy:       tea.String("NoSpot"),
 	})
@@ -136,6 +162,15 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 	return nil
 }
 
+func (a *AliCloudUsecase) OpenSSh(ctx context.Context, cluster *Cluster) error {
+	// in the slb
+	return nil
+}
+
+func (a *AliCloudUsecase) CloseSSh(ctx context.Context, cluster *Cluster) error {
+	return nil
+}
+
 func (a *AliCloudUsecase) CreateNetwork(ctx context.Context, cluster *Cluster) error {
 	fs := []func(context.Context, *Cluster) error{
 		a.createVPC,
@@ -149,62 +184,6 @@ func (a *AliCloudUsecase) CreateNetwork(ctx context.Context, cluster *Cluster) e
 	for _, f := range fs {
 		if err := f(ctx, cluster); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-func (a *AliCloudUsecase) SetByNodeGroups(ctx context.Context, cluster *Cluster) error {
-	// instance type
-	for _, nodeGroup := range cluster.NodeGroups {
-		if nodeGroup.InstanceType != "" {
-			continue
-		}
-		instanceTypeFamiliy := a.getIntanceTypeFamilies(nodeGroup.Type)
-		findInstanceTypeParam := FindInstanceTypeParam{
-			InstanceTypeFamiliy: instanceTypeFamiliy,
-			CPU:                 nodeGroup.Cpu,
-			Memory:              nodeGroup.Memory,
-			GPU:                 nodeGroup.Gpu,
-			GPUSpec:             nodeGroup.GpuSpec,
-			Arch:                nodeGroup.Arch,
-		}
-		instanceInfo, err := a.findInstanceType(cluster, findInstanceTypeParam)
-		if err != nil {
-			return err
-		}
-		nodeGroup.InstanceType = tea.StringValue(instanceInfo.InstanceTypeId)
-		nodeGroup.Cpu = tea.Int32Value(instanceInfo.CpuCoreCount)
-		nodeGroup.Memory = int32(tea.Float32Value(instanceInfo.MemorySize))
-		if nodeGroup.Gpu > 0 {
-			nodeGroup.Gpu = tea.Int32Value(instanceInfo.GPUAmount)
-		}
-		a.log.Info("instance type found: ", nodeGroup.InstanceType)
-	}
-
-	// image
-	for _, nodeGroup := range cluster.NodeGroups {
-		if nodeGroup.InstanceType == "" {
-			return errors.New("instance type not found")
-		}
-		image, err := a.findImage(cluster.Region, nodeGroup.InstanceType)
-		if err != nil {
-			return err
-		}
-		a.log.Infof("image found: %s", tea.StringValue(image.Description))
-		if tea.Int32Value(image.Size) != 0 {
-			nodeGroup.SystemDiskSize = tea.Int32Value(image.Size)
-		}
-		nodeGroup.Os = tea.StringValue(image.OSName)
-		nodeGroup.Image = tea.StringValue(image.ImageId)
-		nodeGroup.ImageDescription = tea.StringValue(image.Description)
-		for _, disk := range image.DiskDeviceMappings.DiskDeviceMapping {
-			if tea.StringValue(disk.Type) == "system" {
-				nodeGroup.RootDeviceName = tea.StringValue(disk.Device)
-			}
-			if nodeGroup.DataDeviceName == "" && tea.StringValue(disk.Type) == "system" {
-				nodeGroup.DataDeviceName = tea.StringValue(disk.Device)
-			}
 		}
 	}
 	return nil
@@ -398,36 +377,87 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 	}
 
 	// Create instances
-	instanceIds := make([]string, 0)
 	for _, nodeGroup := range cluster.NodeGroups {
 		createInstanceReq := &ecs20140526.CreateInstanceRequest{
 			InstanceChargeType: tea.String("PostPaid"),
 			RegionId:           tea.String(cluster.Region),
-			ImageId:            tea.String(nodeGroup.Image),
-			InstanceType:       tea.String(nodeGroup.InstanceType),
 			KeyPairName:        tea.String(keyPair.Name),
 			SecurityGroupId:    tea.String(sg.RefId),
 			SystemDisk: &ecs20140526.CreateInstanceRequestSystemDisk{
 				Category: tea.String("cloud_ssd"),
 				Size:     tea.Int32(nodeGroup.SystemDiskSize),
 			},
+			DataDisk: []*ecs20140526.CreateInstanceRequestDataDisk{},
 		}
+		imageId, err := a.findImage(cluster.Region, nodeGroup.Arch)
+		if err != nil {
+			return err
+		}
+		createInstanceReq.ImageId = tea.String(imageId)
 		for index, node := range cluster.Nodes {
 			if node.Status != NodeStatus_NODE_CREATING || node.NodeGroupId != nodeGroup.Id {
 				continue
+			}
+			instanceInfo, err := a.findInstanceType(cluster, findInstanceTypeParam{
+				Arch:    nodeGroup.Arch,
+				CPU:     nodeGroup.Cpu,
+				GPU:     nodeGroup.Gpu,
+				GPUSpec: nodeGroup.GpuSpec,
+				ImageId: imageId,
+				Memory:  nodeGroup.Memory,
+			})
+			if err != nil {
+				return err
 			}
 			privateSubnet := cluster.DistributeNodePrivateSubnets(index)
 			if privateSubnet == nil {
 				return errors.New("no private subnet found")
 			}
+			createInstanceReq.InstanceType = tea.String(instanceInfo.InstanceTypeId)
 			createInstanceReq.VSwitchId = tea.String(privateSubnet.RefId)
 			createInstanceRes, err := a.ecsClient.CreateInstance(createInstanceReq)
 			if err != nil {
 				return errors.Wrap(err, "failed to create instance")
 			}
 			a.log.Infof("instance %s creating", tea.StringValue(createInstanceRes.Body.InstanceId))
-			instanceIds = append(instanceIds, tea.StringValue(createInstanceRes.Body.InstanceId))
-			node.InstanceId = tea.StringValue(createInstanceRes.Body.InstanceId)
+
+			timeOutNumber := 0
+			instanceFinish := false
+			for {
+				if timeOutNumber > TimeOutCountNumber {
+					return errors.New("timeout")
+				}
+				time.Sleep(time.Second * TimeOutSecond)
+				timeOutNumber++
+				instanceStatus, err := a.ecsClient.DescribeInstanceStatus(&ecs20140526.DescribeInstanceStatusRequest{
+					RegionId:   tea.String(cluster.Region),
+					InstanceId: tea.StringSlice([]string{tea.StringValue(createInstanceRes.Body.InstanceId)}),
+					PageNumber: tea.Int32(1),
+					PageSize:   tea.Int32(1),
+				})
+				if err != nil {
+					return errors.Wrap(err, "failed to describe instance status")
+				}
+				for _, instanceStatus := range instanceStatus.Body.InstanceStatuses.InstanceStatus {
+					if tea.StringValue(instanceStatus.Status) == "Stopped" {
+						_, err := a.ecsClient.StartInstance(&ecs20140526.StartInstanceRequest{
+							InstanceId: instanceStatus.InstanceId,
+						})
+						if err != nil {
+							return errors.Wrap(err, "failed to start instance")
+						}
+						a.log.Infof("instance %s starting", tea.StringValue(instanceStatus.InstanceId))
+						time.Sleep(time.Second)
+					}
+					if tea.StringValue(instanceStatus.Status) == "Running" {
+						instanceFinish = true
+						a.log.Infof("instance %s created successfully", tea.StringValue(instanceStatus.InstanceId))
+					}
+				}
+				if instanceFinish {
+					break
+				}
+			}
 			if nodeGroup.DataDiskSize != 0 {
 				dataDiskName := fmt.Sprintf("%s-%s-data-disk", cluster.Name, node.Name)
 				dataDiskRes, err := a.ecsClient.CreateDisk(&ecs20140526.CreateDiskRequest{
@@ -440,6 +470,7 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 				if err != nil {
 					return errors.Wrap(err, "failed to create data disk")
 				}
+				a.log.Infof("data disk %s created successfully", dataDiskName)
 				cluster.AddCloudResource(&CloudResource{
 					Name:         dataDiskName,
 					RefId:        tea.StringValue(dataDiskRes.Body.DiskId),
@@ -450,57 +481,6 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 		}
 	}
 
-	timeOutNumber := 0
-	instanceFinishNumber := 0
-	instanceCount := len(instanceIds)
-	if instanceCount == 0 {
-		return nil
-	}
-	for {
-		if instanceFinishNumber >= instanceCount {
-			break
-		}
-		if timeOutNumber > (TimeOutCountNumber * instanceCount) {
-			return errors.New("timeout")
-		}
-		time.Sleep(time.Second * TimeOutSecond)
-		timeOutNumber++
-
-		var pageNumber int32 = 1
-		instanceStatus := make([]*ecs20140526.DescribeInstanceStatusResponseBodyInstanceStatusesInstanceStatus, 0)
-		for {
-			instancesStatus, err := a.ecsClient.DescribeInstanceStatus(&ecs20140526.DescribeInstanceStatusRequest{
-				RegionId:   tea.String(cluster.Region),
-				InstanceId: tea.StringSlice(instanceIds),
-				PageNumber: tea.Int32(pageNumber),
-				PageSize:   tea.Int32(50),
-			})
-			if err != nil {
-				return errors.Wrap(err, "failed to describe instance status")
-			}
-			instanceStatus = append(instanceStatus, instancesStatus.Body.InstanceStatuses.InstanceStatus...)
-			if len(instancesStatus.Body.InstanceStatuses.InstanceStatus) < 50 {
-				break
-			}
-			pageNumber++
-		}
-		for _, instanceStatus := range instanceStatus {
-			if tea.StringValue(instanceStatus.Status) == "Stopped" {
-				_, err := a.ecsClient.StartInstance(&ecs20140526.StartInstanceRequest{
-					InstanceId: instanceStatus.InstanceId,
-				})
-				if err != nil {
-					return errors.Wrap(err, "failed to start instance")
-				}
-				a.log.Infof("instance %s starting", tea.StringValue(instanceStatus.InstanceId))
-				time.Sleep(time.Second)
-			}
-			if tea.StringValue(instanceStatus.Status) == "Running" {
-				instanceFinishNumber++
-				a.log.Infof("instance %s created successfully", tea.StringValue(instanceStatus.InstanceId))
-			}
-		}
-	}
 	for _, node := range cluster.Nodes {
 		if node.Status != NodeStatus_NODE_CREATING || node.InstanceId == "" {
 			continue
@@ -519,155 +499,6 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 		node.User = "root"
 		time.Sleep(time.Second)
 	}
-	return nil
-}
-
-func (a *AliCloudUsecase) ManageBostionHost(ctx context.Context, cluster *Cluster) error {
-	if cluster.BostionHost == nil {
-		return nil
-	}
-	if cluster.BostionHost.Status == NodeStatus_NODE_DELETING {
-		if cluster.BostionHost.InstanceId == "" {
-			return nil
-		}
-		_, err := a.ecsClient.DeleteInstance(&ecs20140526.DeleteInstanceRequest{
-			InstanceId:            tea.String(cluster.BostionHost.InstanceId),
-			Force:                 tea.Bool(true),
-			TerminateSubscription: tea.Bool(true),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to delete instance")
-		}
-		cluster.BostionHost.InstanceId = ""
-		return nil
-	}
-	if cluster.BostionHost.Status != NodeStatus_NODE_CREATING {
-		return nil
-	}
-	// Get key pair
-	keyPair := cluster.GetSingleCloudResource(ResourceType_KEY_PAIR)
-	if keyPair == nil {
-		return errors.New("key pair not found")
-	}
-
-	// sg
-	sg := cluster.GetSingleCloudResource(ResourceType_SECURITY_GROUP)
-	if sg == nil {
-		return errors.New("security group not found in the ManageBostionHost")
-	}
-	// subnet
-	publicVSwitch := cluster.GetCloudResourceByTagsSingle(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{
-		ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PUBLIC,
-	})
-	if publicVSwitch == nil {
-		return errors.New("public subnet not found in the ManageBostionHost")
-	}
-	instanceType := ""
-	imageId := ""
-	for _, ng := range cluster.NodeGroups {
-		if ng.Type == NodeGroupType_NORMAL {
-			instanceType = ng.InstanceType
-			imageId = ng.Image
-			cluster.BostionHost.Arch = ng.Arch
-			cluster.BostionHost.Image = ng.Image
-			break
-		}
-	}
-	bastionName := fmt.Sprintf("%s-bastion", cluster.Name)
-	bastionHostRes, err := a.ecsClient.CreateInstance(&ecs20140526.CreateInstanceRequest{
-		RegionId:                tea.String(cluster.Region),
-		InstanceName:            tea.String(bastionName),
-		InstanceType:            tea.String(instanceType),
-		SecurityGroupId:         tea.String(sg.RefId),
-		VSwitchId:               tea.String(publicVSwitch.RefId),
-		KeyPairName:             tea.String(keyPair.RefId),
-		ImageId:                 tea.String(imageId),
-		InstanceChargeType:      tea.String("PostPaid"),
-		SpotStrategy:            tea.String("NoSpot"),
-		InternetMaxBandwidthIn:  tea.Int32(10),
-		InternetMaxBandwidthOut: tea.Int32(5),
-		SystemDisk: &ecs20140526.CreateInstanceRequestSystemDisk{
-			Size:     tea.Int32(30),
-			Category: tea.String("cloud_ssd"),
-		},
-		Tag: []*ecs20140526.CreateInstanceRequestTag{
-			{
-				Key:   tea.String(ResourceTypeKeyValue_NAME.String()),
-				Value: tea.String(bastionName),
-			},
-		},
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to create bastion host")
-	}
-	cluster.BostionHost.InstanceId = tea.StringValue(bastionHostRes.Body.InstanceId)
-	timeOutNumber := 0
-	bostionHostRuning := false
-	for {
-		if timeOutNumber > TimeOutCountNumber || bostionHostRuning {
-			break
-		}
-		time.Sleep(time.Second * TimeOutSecond)
-		timeOutNumber++
-		instanceStatus, err := a.ecsClient.DescribeInstanceStatus(&ecs20140526.DescribeInstanceStatusRequest{
-			RegionId: tea.String(cluster.Region),
-			InstanceId: tea.StringSlice([]string{
-				cluster.BostionHost.InstanceId,
-			}),
-			PageNumber: tea.Int32(1),
-			PageSize:   tea.Int32(1),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to describe instance status")
-		}
-		for _, status := range instanceStatus.Body.InstanceStatuses.InstanceStatus {
-			if tea.StringValue(status.Status) == "Stopped" {
-				_, err := a.ecsClient.StartInstance(&ecs20140526.StartInstanceRequest{
-					InstanceId: status.InstanceId,
-				})
-				if err != nil {
-					return errors.Wrap(err, "failed to start instance")
-				}
-			}
-			if tea.StringValue(status.Status) == "Running" {
-				bostionHostRuning = true
-				break
-			}
-		}
-	}
-	if !bostionHostRuning {
-		return errors.New("bastion host create failed")
-	}
-	// eip
-	ipaddressRes, err := a.ecsClient.AllocatePublicIpAddress(&ecs20140526.AllocatePublicIpAddressRequest{
-		InstanceId: tea.String(cluster.BostionHost.InstanceId),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to allocate public ip address")
-	}
-	cluster.BostionHost.ExternalIp = tea.StringValue(ipaddressRes.Body.IpAddress)
-	netWorkInterface, err := a.ecsClient.DescribeNetworkInterfaces(&ecs20140526.DescribeNetworkInterfacesRequest{
-		RegionId:   tea.String(cluster.Region),
-		InstanceId: tea.String(cluster.BostionHost.InstanceId),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to describe instance attribute")
-	}
-	if len(netWorkInterface.Body.NetworkInterfaceSets.NetworkInterfaceSet) == 0 {
-		return errors.New("network interface not found")
-	}
-	cluster.BostionHost.InternalIp = tea.StringValue(netWorkInterface.Body.NetworkInterfaceSets.NetworkInterfaceSet[0].PrivateIpAddress)
-	instanceRes, err := a.ecsClient.DescribeInstanceAttribute(&ecs20140526.DescribeInstanceAttributeRequest{
-		InstanceId: tea.String(cluster.BostionHost.InstanceId),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to describe instance attribute")
-	}
-	cluster.BostionHost.User = "root"
-	cluster.BostionHost.Os = "Linux"
-	cluster.BostionHost.Cpu = tea.Int32Value(instanceRes.Body.Cpu)
-	cluster.BostionHost.Memory = int32(math.Ceil(float64(tea.Int32Value(instanceRes.Body.Memory)) / float64(1024)))
-	a.log.Infof("bastion host %s created successfully", bastionName)
 	return nil
 }
 
@@ -1018,7 +849,7 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		}
 		name := a.getSubnetName(cluster.Name, zoneId)
 		tags := GetTags()
-		tags[ResourceTypeKeyValue_ZONE] = zoneId
+		tags[ResourceTypeKeyValue_ZONE_ID] = zoneId
 		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
 		tags[ResourceTypeKeyValue_NAME] = name
 		a.createVpcTags(cluster.Region, tea.StringValue(subnet.VSwitchId), "VSWITCH", tags)
@@ -1038,7 +869,7 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		tags := GetTags()
 		tags[ResourceTypeKeyValue_NAME] = name
 		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
-		tags[ResourceTypeKeyValue_ZONE] = az.RefId
+		tags[ResourceTypeKeyValue_ZONE_ID] = az.RefId
 		if cluster.GetCloudResourceByTags(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: name}) != nil {
 			continue
 		}
@@ -1137,7 +968,7 @@ func (a *AliCloudUsecase) createEips(_ context.Context, cluster *Cluster) error 
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
 		name := a.getEipName(cluster.Name, az.RefId)
 		tags := GetTags()
-		tags[ResourceTypeKeyValue_ZONE] = az.RefId
+		tags[ResourceTypeKeyValue_ZONE_ID] = az.RefId
 		tags[ResourceTypeKeyValue_NAME] = name
 		for _, eip := range eips {
 			if tea.StringValue(eip.InstanceId) != "" {
@@ -1147,7 +978,7 @@ func (a *AliCloudUsecase) createEips(_ context.Context, cluster *Cluster) error 
 				a.log.Infof("eip %s already exists", tea.StringValue(eip.AllocationId))
 				continue
 			}
-			if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE: az.RefId}) != nil {
+			if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId}) != nil {
 				break
 			}
 			cluster.AddCloudResource(&CloudResource{
@@ -1161,7 +992,7 @@ func (a *AliCloudUsecase) createEips(_ context.Context, cluster *Cluster) error 
 			a.log.Infof("elastic ip %s already exists", tea.StringValue(eip.IpAddress))
 			break
 		}
-		if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE: az.RefId}) != nil {
+		if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId}) != nil {
 			continue
 		}
 		// Allocate new EIP
@@ -1271,9 +1102,9 @@ func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			}
 		}
 		tags := GetTags()
-		name := a.getNatgatewayName(cluster.Name, cast.ToString(subnetCloudResourceMapTags[ResourceTypeKeyValue_ZONE]))
+		name := a.getNatgatewayName(cluster.Name, cast.ToString(subnetCloudResourceMapTags[ResourceTypeKeyValue_ZONE_ID]))
 		tags[ResourceTypeKeyValue_NAME] = name
-		tags[ResourceTypeKeyValue_ZONE] = subnetCloudResourceMapTags[ResourceTypeKeyValue_ZONE]
+		tags[ResourceTypeKeyValue_ZONE_ID] = subnetCloudResourceMapTags[ResourceTypeKeyValue_ZONE_ID]
 		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
 		cluster.AddCloudResource(&CloudResource{
 			Name:         name,
@@ -1288,21 +1119,21 @@ func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 
 	// create NAT Gateways for each AZ
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		natgatewayResource := cluster.GetCloudResourceByTagsSingle(ResourceType_NAT_GATEWAY, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE: az.RefId})
+		natgatewayResource := cluster.GetCloudResourceByTagsSingle(ResourceType_NAT_GATEWAY, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId})
 		// value is the eip id
 		if natgatewayResource != nil && natgatewayResource.Value != "" {
 			continue
 		}
 		// Get private subnet for the AZ
 		privateSubnet := cluster.GetCloudResourceByTagsSingle(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{
-			ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PRIVATE,
-			ResourceTypeKeyValue_ZONE:   az.RefId,
+			ResourceTypeKeyValue_ACCESS:  ResourceTypeKeyValue_ACCESS_PRIVATE,
+			ResourceTypeKeyValue_ZONE_ID: az.RefId,
 		})
 		if privateSubnet == nil {
 			return errors.New("no private subnet found for AZ " + az.RefId)
 		}
 		// Get Elastic IP
-		eip := cluster.GetCloudResourceByTagsSingle(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE: az.RefId})
+		eip := cluster.GetCloudResourceByTagsSingle(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId})
 		if eip == nil {
 			return errors.New("no eip found for AZ " + az.RefId)
 		}
@@ -1404,9 +1235,9 @@ func (a *AliCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 			AssociatedId: privateSubnet.RefId,
 			Value:        eip.RefId,
 			Tags: cluster.EncodeTags(map[ResourceTypeKeyValue]any{
-				ResourceTypeKeyValue_NAME:   natGatewayName,
-				ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PRIVATE,
-				ResourceTypeKeyValue_ZONE:   az.RefId,
+				ResourceTypeKeyValue_NAME:    natGatewayName,
+				ResourceTypeKeyValue_ACCESS:  ResourceTypeKeyValue_ACCESS_PRIVATE,
+				ResourceTypeKeyValue_ZONE_ID: az.RefId,
 			}),
 		})
 	}
@@ -1454,14 +1285,14 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 
 	// Create private route tables (one per AZ)
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		if cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE: az.RefId}) != nil {
+		if cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId}) != nil {
 			continue
 		}
 		privateRouteTableName := a.getPrivateRouteTableName(cluster.Name, az.RefId)
 		tags := GetTags()
 		tags[ResourceTypeKeyValue_NAME] = privateRouteTableName
 		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
-		tags[ResourceTypeKeyValue_ZONE] = az.RefId
+		tags[ResourceTypeKeyValue_ZONE_ID] = az.RefId
 		// Create private route table
 		privateRouteTableRes, err := a.vpcClient.CreateRouteTable(&vpc20160428.CreateRouteTableRequest{
 			RegionId:       tea.String(cluster.Region),
@@ -1522,8 +1353,8 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		}
 		routeTableTags := cluster.DecodeTags(routeTable.Tags)
 		privateSubnet := cluster.GetCloudResourceByTagsSingle(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{
-			ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PRIVATE,
-			ResourceTypeKeyValue_ZONE:   routeTableTags[ResourceTypeKeyValue_ZONE],
+			ResourceTypeKeyValue_ACCESS:  ResourceTypeKeyValue_ACCESS_PRIVATE,
+			ResourceTypeKeyValue_ZONE_ID: routeTableTags[ResourceTypeKeyValue_ZONE_ID],
 		})
 		res, err := a.vpcClient.AssociateRouteTable(&vpc20160428.AssociateRouteTableRequest{
 			RegionId:     tea.String(cluster.Region),
@@ -1551,14 +1382,14 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		}
 		routeTableTags := cluster.DecodeTags(routeTable.Tags)
 		natGateway := cluster.GetCloudResourceByTagsSingle(ResourceType_NAT_GATEWAY, map[ResourceTypeKeyValue]any{
-			ResourceTypeKeyValue_ZONE: routeTableTags[ResourceTypeKeyValue_ZONE],
+			ResourceTypeKeyValue_ZONE_ID: routeTableTags[ResourceTypeKeyValue_ZONE_ID],
 		})
 		if natGateway == nil {
 			return errors.New("nat gateway not found in route table tags")
 		}
 		privateSubnet := cluster.GetCloudResourceByTagsSingle(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{
-			ResourceTypeKeyValue_ACCESS: ResourceTypeKeyValue_ACCESS_PRIVATE,
-			ResourceTypeKeyValue_ZONE:   routeTableTags[ResourceTypeKeyValue_ZONE],
+			ResourceTypeKeyValue_ACCESS:  ResourceTypeKeyValue_ACCESS_PRIVATE,
+			ResourceTypeKeyValue_ZONE_ID: routeTableTags[ResourceTypeKeyValue_ZONE_ID],
 		})
 		if privateSubnet == nil {
 			return errors.New("private subnet not found in route table tags")
@@ -1579,50 +1410,29 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 }
 
 func (a *AliCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Cluster) error {
-	if len(cluster.SecurityGroups) == 0 {
+	if len(cluster.IngressControllerRules) == 0 {
 		return nil
 	}
 	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
 	if vpc == nil {
 		return errors.New("vpc not found")
 	}
-
-	// List existing security groups
-	var pageNumber int32 = 1
-	existingSecurityGroups := make([]*ecs20140526.DescribeSecurityGroupsResponseBodySecurityGroupsSecurityGroup, 0)
-	for {
-		securityGroupsRes, err := a.ecsClient.DescribeSecurityGroups(&ecs20140526.DescribeSecurityGroupsRequest{
-			RegionId:   tea.String(cluster.Region),
-			VpcId:      tea.String(vpc.RefId),
-			PageNumber: tea.Int32(pageNumber),
-			PageSize:   tea.Int32(50),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to describe security groups")
-		}
-		existingSecurityGroups = append(existingSecurityGroups, securityGroupsRes.Body.SecurityGroups.SecurityGroup...)
-		if len(securityGroupsRes.Body.SecurityGroups.SecurityGroup) < 50 {
-			break
-		}
-		pageNumber++
+	securityGroupsRes, err := a.ecsClient.DescribeSecurityGroups(&ecs20140526.DescribeSecurityGroupsRequest{
+		RegionId:          tea.String(cluster.Region),
+		VpcId:             tea.String(vpc.RefId),
+		SecurityGroupName: tea.String(a.getSgName(cluster.Name)),
+		PageNumber:        tea.Int32(1),
+		PageSize:          tea.Int32(1),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to describe security groups")
 	}
-
-	// clear history security group
-	for _, securityGroupCloudResource := range cluster.GetCloudResource(ResourceType_SECURITY_GROUP) {
-		securityGroupCloudResourceExits := false
-		for _, securityGroup := range existingSecurityGroups {
-			if securityGroupCloudResource.RefId == tea.StringValue(securityGroup.SecurityGroupId) {
-				securityGroupCloudResourceExits = true
-				break
-			}
-		}
-		if !securityGroupCloudResourceExits {
-			cluster.DeleteCloudResourceByRefID(ResourceType_SECURITY_GROUP, securityGroupCloudResource.RefId)
-		}
+	if len(securityGroupsRes.Body.SecurityGroups.SecurityGroup) == 0 && cluster.GetSingleCloudResource(ResourceType_SECURITY_GROUP) != nil {
+		cluster.DeleteCloudResource(ResourceType_SECURITY_GROUP)
 	}
 
 	// Process existing security groups
-	for _, securityGroup := range existingSecurityGroups {
+	for _, securityGroup := range securityGroupsRes.Body.SecurityGroups.SecurityGroup {
 		if cluster.GetCloudResourceByRefID(ResourceType_SECURITY_GROUP, tea.StringValue(securityGroup.SecurityGroupId)) != nil {
 			a.log.Infof("security group %s already exists", tea.StringValue(securityGroup.SecurityGroupId))
 			continue
@@ -1645,7 +1455,6 @@ func (a *AliCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 		// Create security group
 		tags := GetTags()
 		tags[ResourceTypeKeyValue_NAME] = sgName
-		tags[ResourceTypeKeyValue_SECURITY_GROUP_TYPE] = ResourceTypeKeyValue_SECURITY_GROUP_TYPE_CLUSTER
 		createSGReq := &ecs20140526.CreateSecurityGroupRequest{
 			RegionId:          tea.String(cluster.Region),
 			VpcId:             tea.String(vpc.RefId),
@@ -1682,7 +1491,7 @@ func (a *AliCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 	exitsRules := make([]string, 0)
 	for _, sgRule := range sgRuleRes.Body.Permissions.Permission {
 		exits := false
-		for _, clusterSgRule := range cluster.SecurityGroups {
+		for _, clusterSgRule := range cluster.IngressControllerRules {
 			clusterSgRuelVals := strings.Join([]string{
 				clusterSgRule.Protocol, clusterSgRule.IpCidr,
 				fmt.Sprintf("%d/%d", clusterSgRule.StartPort, clusterSgRule.EndPort)},
@@ -1710,9 +1519,10 @@ func (a *AliCloudUsecase) createSecurityGroup(ctx context.Context, cluster *Clus
 		if err != nil {
 			return errors.Wrap(err, "failed to clear security group rule")
 		}
+		time.Sleep(time.Second)
 	}
 
-	for _, sgRule := range cluster.SecurityGroups {
+	for _, sgRule := range cluster.IngressControllerRules {
 		sgRuelVals := strings.Join([]string{
 			sgRule.Protocol, sgRule.IpCidr,
 			fmt.Sprintf("%d/%d", sgRule.StartPort, sgRule.EndPort)},
@@ -1750,130 +1560,234 @@ func (a *AliCloudUsecase) createSLB(_ context.Context, cluster *Cluster) error {
 		a.log.Infof("slb %s already exists", name)
 		return nil
 	}
-	// List existing SLBs
-	var pageNumber int32 = 1
-	for {
-		loadBalancers, err := a.slbClient.DescribeLoadBalancers(&slb20140515.DescribeLoadBalancersRequest{
-			RegionId:   tea.String(cluster.Region),
-			VpcId:      tea.String(vpc.RefId),
-			PageNumber: tea.Int32(pageNumber),
-			PageSize:   tea.Int32(50),
+	loadBalancers, err := a.slbClient.DescribeLoadBalancers(&slb20140515.DescribeLoadBalancersRequest{
+		LoadBalancerName: tea.String(name),
+		RegionId:         tea.String(cluster.Region),
+		VpcId:            tea.String(vpc.RefId),
+		PageNumber:       tea.Int32(1),
+		PageSize:         tea.Int32(1),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to describe load balancers")
+	}
+	for _, lb := range loadBalancers.Body.LoadBalancers.LoadBalancer {
+		if cluster.GetCloudResourceByRefID(ResourceType_LOAD_BALANCER, tea.StringValue(lb.LoadBalancerId)) != nil {
+			continue
+		}
+		cluster.AddCloudResource(&CloudResource{
+			Name:  tea.StringValue(lb.LoadBalancerName),
+			RefId: tea.StringValue(lb.LoadBalancerId),
+			Type:  ResourceType_LOAD_BALANCER,
+			Value: tea.StringValue(lb.Address),
+		})
+		a.log.Infof("slb %s already exists", tea.StringValue(lb.LoadBalancerName))
+	}
+	if len(cluster.GetCloudResource(ResourceType_LOAD_BALANCER)) == 0 {
+		// Create SLB
+		slbRes, err := a.slbClient.CreateLoadBalancer(&slb20140515.CreateLoadBalancerRequest{
+			RegionId:           tea.String(cluster.Region),
+			VpcId:              tea.String(vpc.RefId),
+			LoadBalancerName:   tea.String(name),
+			PayType:            tea.String("PayOnDemand"),
+			AddressType:        tea.String("internet"),
+			InternetChargeType: tea.String("paybytraffic"),
+			InstanceChargeType: tea.String("PayByCLCU"),
 		})
 		if err != nil {
-			return errors.Wrap(err, "failed to describe load balancers")
+			return errors.Wrap(err, "failed to create SLB")
 		}
-		for _, lb := range loadBalancers.Body.LoadBalancers.LoadBalancer {
-			if tea.StringValue(lb.LoadBalancerName) == name {
-				if cluster.GetCloudResourceByRefID(ResourceType_LOAD_BALANCER, tea.StringValue(lb.LoadBalancerId)) != nil {
-					continue
-				}
-				cluster.AddCloudResource(&CloudResource{
-					Name:  tea.StringValue(lb.LoadBalancerName),
-					RefId: tea.StringValue(lb.LoadBalancerId),
-					Type:  ResourceType_LOAD_BALANCER,
+		a.log.Infof("slb %s created", tea.StringValue(slbRes.Body.LoadBalancerName))
+		cluster.AddCloudResource(&CloudResource{
+			Name:  name,
+			RefId: tea.StringValue(slbRes.Body.LoadBalancerId),
+			Type:  ResourceType_LOAD_BALANCER,
+			Value: tea.StringValue(slbRes.Body.Address),
+		})
+	}
+	slbCloudResource := cluster.GetSingleCloudResource(ResourceType_LOAD_BALANCER)
+	if slbCloudResource == nil {
+		return errors.New("slb not found")
+	}
+
+	// handler listener
+	masterNodes := make([]*Node, 0)
+	for _, node := range cluster.Nodes {
+		if node.Role != NodeRole_MASTER || node.InstanceId == "" {
+			continue
+		}
+		masterNodes = append(masterNodes, node)
+	}
+	vServerNames := make([]string, 0)
+	vServerNameProtMap := make(map[string]int32)
+	vServerBackendServerMap := make(map[string][]map[string]string)
+	for _, v := range cluster.IngressControllerRules {
+		if v.Access != IngressControllerRuleAccess_PUBLIC {
+			continue
+		}
+		for port := v.StartPort; port <= v.EndPort; port++ {
+			backendServerMaps := make([]map[string]string, 0)
+			instanceids := make([]string, 0)
+			for _, masterNode := range masterNodes {
+				instanceids = append(instanceids, masterNode.InstanceId)
+				backendServerMaps = append(backendServerMaps, map[string]string{
+					"ServerId":    masterNode.InstanceId,
+					"Weight":      "100",
+					"Type":        "ecs",
+					"Port":        fmt.Sprintf("%d", port),
+					"Description": fmt.Sprintf("%s-%s", masterNode.Name, masterNode.InstanceId),
 				})
-				a.log.Infof("slb %s already exists", tea.StringValue(lb.LoadBalancerName))
-				return nil
+			}
+			instanceidStr := utils.Md5(strings.Join(instanceids, ","))
+			vServerName := fmt.Sprintf("%s-%d", instanceidStr, port)
+			vServerNames = append(vServerNames, vServerName)
+			vServerBackendServerMap[vServerName] = backendServerMaps
+			vServerNameProtMap[vServerName] = port
+		}
+	}
+
+	res, err := a.slbClient.DescribeVServerGroups(&slb20140515.DescribeVServerGroupsRequest{
+		RegionId:        tea.String(cluster.Region),
+		LoadBalancerId:  tea.String(slbCloudResource.RefId),
+		IncludeListener: tea.Bool(true),
+		// IncludeRule:     tea.Bool(true),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to describe vserver groups")
+	}
+	// clear not exits vserver group
+	for _, vserverGroup := range res.Body.VServerGroups.VServerGroup {
+		if utils.InArray(tea.StringValue(vserverGroup.VServerGroupName), vServerNames) {
+			continue
+		}
+		// delete listener
+		for _, listener := range vserverGroup.AssociatedObjects.Listeners.Listener {
+			_, err := a.slbClient.DeleteLoadBalancerListener(&slb20140515.DeleteLoadBalancerListenerRequest{
+				RegionId:         tea.String(cluster.Region),
+				LoadBalancerId:   tea.String(slbCloudResource.RefId),
+				ListenerPort:     listener.Port,
+				ListenerProtocol: listener.Protocol,
+			})
+			if err != nil {
+				return errors.Wrap(err, "failed to delete load balancer listener")
+			}
+			time.Sleep(time.Second)
+		}
+		_, err := a.slbClient.DeleteVServerGroup(&slb20140515.DeleteVServerGroupRequest{
+			RegionId:       tea.String(cluster.Region),
+			VServerGroupId: vserverGroup.VServerGroupId,
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to delete vserver group")
+		}
+		time.Sleep(time.Second)
+	}
+	// if not exits vserver group, create it
+	for _, vServerName := range vServerNames {
+		exits := false
+		for _, vserverGroup := range res.Body.VServerGroups.VServerGroup {
+			if tea.StringValue(vserverGroup.VServerGroupName) == vServerName {
+				exits = true
+				break
 			}
 		}
+		if !exits {
+			backendServerMaps := vServerBackendServerMap[vServerName]
+			backendServerJson, err := json.Marshal(backendServerMaps)
+			if err != nil {
+				return errors.Wrap(err, "failed to marshal backend server maps")
+			}
+			vserverGroupRes, err := a.slbClient.CreateVServerGroup(&slb20140515.CreateVServerGroupRequest{
+				RegionId:         tea.String(cluster.Region),
+				LoadBalancerId:   tea.String(slbCloudResource.RefId),
+				VServerGroupName: tea.String(vServerName),
+				BackendServers:   tea.String(string(backendServerJson)),
+			})
+			if err != nil {
+				return errors.Wrap(err, "failed to create vserver group")
+			}
+			a.log.Infof("vserver group %s created", vServerName)
+			time.Sleep(time.Second)
+			port := vServerNameProtMap[vServerName]
+			_, err = a.slbClient.CreateLoadBalancerTCPListener(&slb20140515.CreateLoadBalancerTCPListenerRequest{
+				RegionId:       tea.String(cluster.Region),
+				LoadBalancerId: tea.String(slbCloudResource.RefId),
+				ListenerPort:   tea.Int32(port),
+				VServerGroupId: vserverGroupRes.Body.VServerGroupId,
+				Bandwidth:      tea.Int32(DefaultBandwidth),
+				Scheduler:      tea.String("wrr"),
+				Description:    tea.String(vServerName),
+			})
+			if err != nil {
+				return errors.Wrap(err, "failed to create load balancer tcp listener")
+			}
+		}
+	}
+	return nil
+}
 
-		if len(loadBalancers.Body.LoadBalancers.LoadBalancer) < 50 {
+var NodeArchToAliIMagecloudType = map[NodeArchType]string{
+	NodeArchType_NodeArchType_UNSPECIFIED: "x86_64",
+	NodeArchType_AMD64:                    "x86_64",
+	NodeArchType_ARM64:                    "arm64",
+}
+
+func (a *AliCloudUsecase) findImage(regionId string, arch NodeArchType) (string, error) {
+	archStr, ok := NodeArchToAliIMagecloudType[arch]
+	if !ok {
+		return "", errors.New("unsupported arch")
+	}
+	pageNumber := 1
+	for {
+		images, err := a.ecsClient.DescribeImages(&ecs20140526.DescribeImagesRequest{
+			RegionId:        tea.String(regionId),
+			Status:          tea.String("Available"),
+			OSType:          tea.String("Linux"),
+			ImageOwnerAlias: tea.String("system"),
+			Architecture:    tea.String(archStr),
+			ActionType:      tea.String("CreateEcs"),
+			PageNumber:      tea.Int32(int32(pageNumber)),
+			PageSize:        tea.Int32(100),
+		})
+		if err != nil {
+			return "", errors.Wrap(err, "failed to describe images")
+		}
+		if images.Body.Images == nil || tea.Int32Value(images.Body.TotalCount) == 0 {
+			return "", errors.New("no images found")
+		}
+		for _, v := range images.Body.Images.Image {
+			if strings.ToLower(tea.StringValue(v.Platform)) == "ubuntu" {
+				return tea.StringValue(v.ImageId), nil
+			}
+		}
+		if len(images.Body.Images.Image) < 100 {
 			break
 		}
 		pageNumber++
 	}
-
-	// Create SLB
-	slbRes, err := a.slbClient.CreateLoadBalancer(&slb20140515.CreateLoadBalancerRequest{
-		RegionId:           tea.String(cluster.Region),
-		VpcId:              tea.String(vpc.RefId),
-		LoadBalancerName:   tea.String(name),
-		PayType:            tea.String("PayOnDemand"),
-		AddressType:        tea.String("internet"),
-		InternetChargeType: tea.String("paybytraffic"),
-		InstanceChargeType: tea.String("PayByCLCU"),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to create SLB")
-	}
-	cluster.AddCloudResource(&CloudResource{
-		Name:  name,
-		RefId: tea.StringValue(slbRes.Body.LoadBalancerId),
-		Type:  ResourceType_LOAD_BALANCER,
-		Value: tea.StringValue(slbRes.Body.Address),
-	})
-	return nil
+	return "", errors.New("failed to find image")
 }
 
-func (a *AliCloudUsecase) getIntanceTypeFamilies(nodeGroupType NodeGroupType) string {
-	switch nodeGroupType {
-	case NodeGroupType_NORMAL:
-		return "ecs.g6"
-	case NodeGroupType_HIGH_COMPUTATION:
-		return "ecs.c6"
-	case NodeGroupType_GPU_ACCELERATERD:
-		return "ecs.gn6i"
-	case NodeGroupType_HIGH_MEMORY:
-		return "ecs.r6"
-	case NodeGroupType_LARGE_HARD_DISK:
-		return "ecs.g6"
-	default:
-		return "ecs.g6"
-	}
+type InstanceTypeInfo struct {
+	InstanceTypeId string
+	Cpu            int32
+	Memory         int32
+	Gpu            int32
+	GpuMemory      int32
+	Price          float32
 }
 
-func (a *AliCloudUsecase) findImage(regionId, instanceType string) (*ecs20140526.DescribeImagesResponseBodyImagesImage, error) {
-	images, err := a.ecsClient.DescribeImages(&ecs20140526.DescribeImagesRequest{
-		RegionId:        tea.String(regionId),
-		Status:          tea.String("Available"),
-		OSType:          tea.String("Linux"),
-		ImageOwnerAlias: tea.String("system"),
-		InstanceType:    tea.String(instanceType),
-		PageNumber:      tea.Int32(1),
-		PageSize:        tea.Int32(100),
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to describe images")
-	}
-	if images.Body.Images == nil || tea.Int32Value(images.Body.TotalCount) == 0 {
-		return nil, errors.New("no images found")
-	}
-	for _, v := range images.Body.Images.Image {
-		if tea.StringValue(v.Status) != "Available" {
-			continue
-		}
-		if strings.ToLower(tea.StringValue(v.Platform)) == "ubuntu" {
-			return v, nil
-		}
-	}
-	return nil, errors.New("failed to find image")
-}
+type InstanceTypeInfors []InstanceTypeInfo
 
-type InstanceTypes []*ecs20140526.DescribeInstanceTypesResponseBodyInstanceTypesInstanceType
-
-// sort by cpu and memory
-func (a InstanceTypes) Len() int {
+func (a InstanceTypeInfors) Len() int {
 	return len(a)
 }
 
-func (a InstanceTypes) Less(i, j int) bool {
-	if a[i].CpuCoreCount == a[j].CpuCoreCount {
-		return tea.Float32Value(a[i].MemorySize) < tea.Float32Value(a[j].MemorySize)
-	}
-	return tea.Int32Value(a[i].CpuCoreCount) < tea.Int32Value(a[j].CpuCoreCount)
-}
-
-func (a InstanceTypes) Swap(i, j int) {
+func (a InstanceTypeInfors) Swap(i, j int) {
 	a[i], a[j] = a[j], a[i]
 }
 
-type FindInstanceTypeParam struct {
-	InstanceTypeFamiliy string
-	CPU                 int32
-	GPU                 int32
-	Memory              int32
-	GPUSpec             NodeGPUSpec
-	Arch                NodeArchType
+func (a InstanceTypeInfors) Less(i, j int) bool {
+	return a[i].Price < a[j].Price
 }
 
 var NodeArchToAlicloudType = map[NodeArchType]string{
@@ -1891,12 +1805,21 @@ var NodeGPUSpecToAlicloudSpec = map[NodeGPUSpec]string{
 	NodeGPUSpec_NVIDIA_T4:               "NVIDIA T4",
 }
 
-func (a *AliCloudUsecase) findInstanceType(cluster *Cluster, param FindInstanceTypeParam) (*ecs20140526.DescribeInstanceTypesResponseBodyInstanceTypesInstanceType, error) {
-	allInstanceTypes := make(InstanceTypes, 0)
+type findInstanceTypeParam struct {
+	CPU     int32
+	GPU     int32
+	Memory  int32
+	GPUSpec NodeGPUSpec
+	Arch    NodeArchType
+	ImageId string
+}
+
+func (a *AliCloudUsecase) findInstanceType(cluster *Cluster, param findInstanceTypeParam) (*InstanceTypeInfo, error) {
+	zones := cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES)
+	instanceTypeInfors := make(InstanceTypeInfors, 0)
 	nexttoken := ""
 	for {
 		instancesReq := &ecs20140526.DescribeInstanceTypesRequest{
-			InstanceTypeFamily:  tea.String(param.InstanceTypeFamiliy),
 			CpuArchitecture:     tea.String(NodeArchToAlicloudType[param.Arch]),
 			MinimumCpuCoreCount: tea.Int32(param.CPU),
 			MinimumMemorySize:   tea.Float32(float32(param.Memory)),
@@ -1910,66 +1833,63 @@ func (a *AliCloudUsecase) findInstanceType(cluster *Cluster, param FindInstanceT
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to describe instance types")
 		}
-		allInstanceTypes = append(allInstanceTypes, instancesRes.Body.InstanceTypes.InstanceType...)
+		for _, instanceType := range instancesRes.Body.InstanceTypes.InstanceType {
+			res, err := a.ecsClient.DescribeAvailableResource(&ecs20140526.DescribeAvailableResourceRequest{
+				RegionId:            tea.String(cluster.Region),
+				InstanceChargeType:  tea.String("PostPaid"),
+				InstanceType:        instanceType.InstanceTypeId,
+				DestinationResource: tea.String("Zone"),
+				IoOptimized:         tea.String("optimized"),
+			})
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to describe available resource")
+			}
+			instanceTypeZoneNumber := 0
+			for _, zone := range zones {
+				for _, v := range res.Body.AvailableZones.AvailableZone {
+					if zone.RefId == tea.StringValue(v.ZoneId) {
+						if tea.StringValue(v.Status) == "Available" {
+							instanceTypeZoneNumber += 1
+						}
+						break
+					}
+				}
+			}
+			if len(zones) == instanceTypeZoneNumber {
+				res, err := a.ecsClient.DescribePrice(&ecs20140526.DescribePriceRequest{
+					RegionId:     tea.String(cluster.Region),
+					ResourceType: tea.String("instance"),
+					ImageId:      tea.String(param.ImageId),
+					InstanceType: instanceType.InstanceTypeId,
+					IoOptimized:  tea.String("optimized"),
+					Platform:     tea.String("Linux"),
+				})
+				if err != nil {
+					return nil, errors.Wrap(err, "failed to describe price")
+				}
+				if res.Body.PriceInfo == nil || res.Body.PriceInfo.Price != nil {
+					continue
+				}
+				instanceTypeInfors = append(instanceTypeInfors, InstanceTypeInfo{
+					InstanceTypeId: tea.StringValue(instanceType.InstanceTypeId),
+					Cpu:            tea.Int32Value(instanceType.CpuCoreCount),
+					Memory:         int32(tea.Float32Value(instanceType.MemorySize)),
+					Gpu:            tea.Int32Value(instanceType.GPUAmount),
+					GpuMemory:      int32(tea.Float32Value(instanceType.GPUMemorySize)),
+					Price:          tea.Float32Value(res.Body.PriceInfo.Price.TradePrice),
+				})
+			}
+		}
 		if len(instancesRes.Body.InstanceTypes.InstanceType) == 0 || tea.StringValue(instancesRes.Body.NextToken) == "" {
 			break
 		}
 		nexttoken = tea.StringValue(instancesRes.Body.NextToken)
 	}
-	// DescribeAvailableResource
-	instanceTypes := make(InstanceTypes, 0)
-	zones := cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES)
-	for index, instanceType := range allInstanceTypes {
-		res, err := a.ecsClient.DescribeAvailableResource(&ecs20140526.DescribeAvailableResourceRequest{
-			RegionId:            tea.String(cluster.Region),
-			InstanceChargeType:  tea.String("PostPaid"),
-			InstanceType:        instanceType.InstanceTypeId,
-			DestinationResource: tea.String("Zone"),
-		})
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to describe available resource")
-		}
-		instanceTypeOk := 0
-		for _, zone := range zones {
-			for _, v := range res.Body.AvailableZones.AvailableZone {
-				if zone.RefId == tea.StringValue(v.ZoneId) {
-					if tea.StringValue(v.Status) == "Available" {
-						instanceTypeOk += 1
-					}
-					break
-				}
-			}
-		}
-		if len(zones) == instanceTypeOk {
-			instanceTypes = append(instanceTypes, instanceType)
-		}
-		if index%2 == 0 {
-			time.Sleep(time.Second)
-		}
-	}
-	sort.Sort(instanceTypes)
-	var instanceTypeInfo *ecs20140526.DescribeInstanceTypesResponseBodyInstanceTypesInstanceType
-	for _, instanceType := range instanceTypes {
-		if tea.Float32Value(instanceType.MemorySize) == 0 {
-			continue
-		}
-		if tea.Float32Value(instanceType.MemorySize) >= float32(param.Memory) && tea.Int32Value(instanceType.CpuCoreCount) >= param.CPU {
-			instanceTypeInfo = instanceType
-		}
-		if instanceTypeInfo == nil {
-			continue
-		}
-		if param.GPU == 0 {
-			break
-		}
-		if tea.Int32Value(instanceType.GPUAmount) >= param.GPU {
-			break
-		}
-	}
-	if instanceTypeInfo == nil {
+	if len(instanceTypeInfors) == 0 {
 		return nil, errors.New("no instance type found")
 	}
-	return instanceTypeInfo, nil
+	sort.Sort(instanceTypeInfors)
+	return &instanceTypeInfors[0], nil
 }
 
 func (a *AliCloudUsecase) createVpcTags(regionID, resourceID, resourceType string, tags map[ResourceTypeKeyValue]any) error {

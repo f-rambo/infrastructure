@@ -15,17 +15,15 @@ import (
 type ClusterInterface struct {
 	clusterApi.UnimplementedClusterInterfaceServer
 	awsUc     *biz.AwsCloudUsecase
-	gcpUc     *biz.GoogleCloudUsecase
 	aliUc     *biz.AliCloudUsecase
 	clusterUc *biz.ClusterUsecase
 	log       *log.Helper
 	c         *conf.Server
 }
 
-func NewClusterInterface(awsUc *biz.AwsCloudUsecase, gcpUc *biz.GoogleCloudUsecase, aliUc *biz.AliCloudUsecase, clusterUc *biz.ClusterUsecase, logger log.Logger, c *conf.Server) *ClusterInterface {
+func NewClusterInterface(awsUc *biz.AwsCloudUsecase, aliUc *biz.AliCloudUsecase, clusterUc *biz.ClusterUsecase, logger log.Logger, c *conf.Server) *ClusterInterface {
 	return &ClusterInterface{
 		awsUc:     awsUc,
-		gcpUc:     gcpUc,
 		aliUc:     aliUc,
 		clusterUc: clusterUc,
 		log:       log.NewHelper(logger),
@@ -54,7 +52,7 @@ func (c *ClusterInterface) permissionChecking(_ *biz.Cluster) error {
 	return nil
 }
 
-func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster) (*clusterApi.CloudResources, error) {
+func (c *ClusterInterface) GetZones(ctx context.Context, cluster *biz.Cluster) (*clusterApi.CloudResources, error) {
 	response := &clusterApi.CloudResources{Resources: make([]*biz.CloudResource, 0)}
 	if !cluster.Type.IsCloud() {
 		return response, nil
@@ -86,6 +84,35 @@ func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster)
 	response.Resources = cluster.GetCloudResource(biz.ResourceType_AVAILABILITY_ZONES)
 	return response, nil
 }
+
+func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster) (*clusterApi.CloudResources, error) {
+	response := &clusterApi.CloudResources{Resources: make([]*biz.CloudResource, 0)}
+	if !cluster.Type.IsCloud() {
+		return response, nil
+	}
+	if cluster.Type == biz.ClusterType_AWS {
+		err := c.awsUc.Connections(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+		err = c.awsUc.GetAvailabilityRegions(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if cluster.Type == biz.ClusterType_ALICLOUD {
+		err := c.aliUc.Connections(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+		err = c.aliUc.GetAvailabilityRegions(ctx, cluster)
+		if err != nil {
+			return nil, err
+		}
+	}
+	response.Resources = cluster.GetCloudResource(biz.ResourceType_REGION)
+	return response, nil
+}
 func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.ClusterInterface_StartServer) error {
 	if err := c.permissionChecking(cluster); err != nil {
 		return err
@@ -101,20 +128,16 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 	if cluster.Type == biz.ClusterType_AWS {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
-			c.awsUc.SetByNodeGroups,
 			c.awsUc.ImportKeyPair,
 			c.awsUc.CreateNetwork,
-			c.awsUc.ManageBostionHost,
 			c.awsUc.ManageInstance,
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD {
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.aliUc.Connections,
-			c.aliUc.SetByNodeGroups,
 			c.aliUc.ImportKeyPair,
 			c.aliUc.CreateNetwork,
-			c.aliUc.ManageBostionHost,
 			c.aliUc.ManageInstance,
 		}
 	}
@@ -140,7 +163,6 @@ func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterI
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.awsUc.Connections,
 			c.awsUc.ManageInstance,
-			c.awsUc.ManageBostionHost,
 			c.awsUc.DeleteKeyPair,
 			c.awsUc.DeleteNetwork,
 		}
@@ -149,7 +171,6 @@ func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterI
 		funcs = []func(context.Context, *biz.Cluster) error{
 			c.aliUc.Connections,
 			c.aliUc.ManageInstance,
-			c.aliUc.ManageBostionHost,
 			c.aliUc.DeleteKeyPair,
 			c.aliUc.DeleteNetwork,
 		}
@@ -164,7 +185,37 @@ func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterI
 }
 
 func (c *ClusterInterface) MigrateToBostionHost(cluster *biz.Cluster, stream clusterApi.ClusterInterface_MigrateToBostionHostServer) error {
-	defer stream.Send(cluster)
+	defer func() {
+		stream.Send(cluster)
+		if cluster.Type == biz.ClusterType_ALICLOUD {
+			c.aliUc.Connections(stream.Context(), cluster)
+			c.aliUc.CloseSSh(stream.Context(), cluster)
+		}
+		if cluster.Type == biz.ClusterType_AWS {
+			c.awsUc.Connections(stream.Context(), cluster)
+			c.awsUc.CloseSSh(stream.Context(), cluster)
+		}
+	}()
+	if cluster.Type == biz.ClusterType_ALICLOUD {
+		err := c.aliUc.Connections(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.OpenSSh(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+	}
+	if cluster.Type == biz.ClusterType_AWS {
+		err := c.awsUc.Connections(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.OpenSSh(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+	}
 	err := c.clusterUc.MigrateToBostionHost(stream.Context(), cluster)
 	if err != nil {
 		return err

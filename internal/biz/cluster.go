@@ -20,6 +20,8 @@ const (
 	VpcCIDR     = "172.16.0.0/16"
 	ServiceCIDR = "10.96.0.0/16"
 	PodCIDR     = "10.244.0.0/16"
+
+	DefaultBandwidth = 5
 )
 
 func (c *Cluster) GetCloudResource(resourceType ResourceType) []*CloudResource {
@@ -265,42 +267,9 @@ func (c ClusterType) IsCloud() bool {
 	return c != ClusterType_LOCAL
 }
 
-func (ng *NodeGroup) SetTargetSize(size int32) {
-	ng.TargetSize = size
-}
-
-type NodeGroups []*NodeGroup
-
-func (n NodeGroups) Len() int {
-	return len(n)
-}
-
-func (n NodeGroups) Swap(i, j int) {
-	n[i], n[j] = n[j], n[i]
-}
-
-func (n NodeGroups) Less(i, j int) bool {
-	if n[i] == nil || n[j] == nil {
-		return false
-	}
-	if n[i].Memory == n[j].Memory {
-		return n[i].Cpu < n[j].Cpu
-	}
-	return n[i].Memory < n[j].Memory
-}
-
 func (c *Cluster) GetNodeGroup(nodeGroupId string) *NodeGroup {
 	for _, nodeGroup := range c.NodeGroups {
 		if nodeGroup.Id == nodeGroupId {
-			return nodeGroup
-		}
-	}
-	return nil
-}
-
-func (c *Cluster) GetNodeGroupByCloudId(cloudNodeGroupId string) *NodeGroup {
-	for _, nodeGroup := range c.NodeGroups {
-		if nodeGroup.CloudNodeGroupId == cloudNodeGroupId {
 			return nodeGroup
 		}
 	}
@@ -405,17 +374,35 @@ var (
 )
 
 func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Cluster) error {
-	if cluster.BostionHost.User == "" {
-		return errors.New("bostion host username is empty")
+	var bostionHost *Node
+	var bostionHostIp string
+	if !cluster.Type.IsCloud() {
+		for _, node := range cluster.Nodes {
+			if node.Role == NodeRole_MASTER {
+				bostionHost = node
+				bostionHostIp = node.Ip
+				break
+			}
+		}
+	} else {
+		slb := cluster.GetSingleCloudResource(ResourceType_LOAD_BALANCER)
+		for _, node := range cluster.Nodes {
+			if node.InstanceId == "" || node.Role != NodeRole_MASTER {
+				continue
+			}
+			bostionHost = node
+			bostionHostIp = slb.Value
+			break
+		}
 	}
-	if cluster.BostionHost.ExternalIp == "" {
-		return errors.New("bostion host external ip is empty")
+	if bostionHost == nil || bostionHostIp == "" {
+		return errors.New("bostion host is not found")
 	}
 	remoteBash := utils.NewRemoteBash(utils.Server{
-		Name:       "bostion-host",
-		Host:       cluster.BostionHost.ExternalIp,
-		User:       cluster.BostionHost.User,
-		Port:       cluster.BostionHost.SshPort,
+		Name:       bostionHost.Name,
+		Host:       bostionHostIp,
+		User:       bostionHost.User,
+		Port:       22,
 		PrivateKey: cluster.PrivateKey,
 	}, c.log)
 	stdout, err := remoteBash.Run("uname -m")
@@ -441,9 +428,9 @@ func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Clus
 		return err
 	}
 	err = utils.NewBash(c.log).RunCommandWithLogging("sudo bash", syncShellPath,
-		cluster.BostionHost.ExternalIp,
-		cast.ToString(cluster.BostionHost.SshPort),
-		cluster.BostionHost.User,
+		bostionHostIp,
+		"22",
+		bostionHost.User,
 		cluster.PrivateKey,
 		homePath,
 		shellPath,
@@ -525,8 +512,18 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 }
 
 func (c *ClusterUsecase) Install(ctx context.Context, cluster *Cluster) error {
+	var firstMasterNode *Node
+	for _, v := range cluster.Nodes {
+		if v.Role == NodeRole_MASTER {
+			firstMasterNode = v
+			break
+		}
+	}
+	if firstMasterNode == nil {
+		return errors.New("master node not found")
+	}
 	remoteBash := utils.NewRemoteBash(
-		utils.Server{Name: cluster.Name, Host: cluster.MasterIp, User: cluster.MasterUser, Port: 22, PrivateKey: cluster.PrivateKey},
+		utils.Server{Name: cluster.Name, Host: firstMasterNode.Ip, User: firstMasterNode.User, Port: 22, PrivateKey: cluster.PrivateKey},
 		c.log,
 	)
 	shellPath, err := utils.GetServerStorePathByNames(utils.ShellPackage)
@@ -545,10 +542,15 @@ func (c *ClusterUsecase) Install(ctx context.Context, cluster *Cluster) error {
 	if err != nil {
 		return err
 	}
-	clusterConfigMap := map[string]string{"CLUSTER_NAME": cluster.Name, "CLUSTER_VERSION": cluster.Version, "MASTER_IP": cluster.MasterIp, "IMAGE_REPO": ""}
-	clusterConfigDataStr := utils.DecodeYaml(string(clusterConfigData), clusterConfigMap)
+	clusterConfigMap := map[string]string{
+		"CLUSTER_NAME":       cluster.Name,
+		"CLUSTER_VERSION":    cluster.Version,
+		"API_SERVER_ADDRESS": cluster.ApiServerAddress,
+		"IMAGE_REPO":         "",
+	}
+	cluster.Config = utils.DecodeYaml(string(clusterConfigData), clusterConfigMap)
 	clusterConfigPath := fmt.Sprintf("$HOME/%s", ClusterConfiguration)
-	err = remoteBash.RunWithLogging("echo", clusterConfigDataStr, ">", clusterConfigPath)
+	err = remoteBash.RunWithLogging("echo", cluster.Config, ">", clusterConfigPath)
 	if err != nil {
 		return err
 	}

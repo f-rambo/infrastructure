@@ -22,6 +22,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	ClusterInterface_Ping_FullMethodName                 = "/infrastructure.api.cluster.ClusterInterface/Ping"
 	ClusterInterface_GetRegions_FullMethodName           = "/infrastructure.api.cluster.ClusterInterface/GetRegions"
+	ClusterInterface_GetZones_FullMethodName             = "/infrastructure.api.cluster.ClusterInterface/GetZones"
 	ClusterInterface_Start_FullMethodName                = "/infrastructure.api.cluster.ClusterInterface/Start"
 	ClusterInterface_Stop_FullMethodName                 = "/infrastructure.api.cluster.ClusterInterface/Stop"
 	ClusterInterface_MigrateToBostionHost_FullMethodName = "/infrastructure.api.cluster.ClusterInterface/MigrateToBostionHost"
@@ -37,6 +38,7 @@ const (
 type ClusterInterfaceClient interface {
 	Ping(ctx context.Context, in *PingMessage, opts ...grpc.CallOption) (grpc.ServerStreamingClient[PingMessage], error)
 	GetRegions(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (*CloudResources, error)
+	GetZones(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (*CloudResources, error)
 	Start(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
 	Stop(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
 	MigrateToBostionHost(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
@@ -77,6 +79,16 @@ func (c *clusterInterfaceClient) GetRegions(ctx context.Context, in *biz.Cluster
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CloudResources)
 	err := c.cc.Invoke(ctx, ClusterInterface_GetRegions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *clusterInterfaceClient) GetZones(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (*CloudResources, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CloudResources)
+	err := c.cc.Invoke(ctx, ClusterInterface_GetZones_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +234,7 @@ type ClusterInterface_HandlerNodesClient = grpc.ServerStreamingClient[biz.Cluste
 type ClusterInterfaceServer interface {
 	Ping(*PingMessage, grpc.ServerStreamingServer[PingMessage]) error
 	GetRegions(context.Context, *biz.Cluster) (*CloudResources, error)
+	GetZones(context.Context, *biz.Cluster) (*CloudResources, error)
 	Start(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
 	Stop(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
 	MigrateToBostionHost(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
@@ -244,6 +257,9 @@ func (UnimplementedClusterInterfaceServer) Ping(*PingMessage, grpc.ServerStreami
 }
 func (UnimplementedClusterInterfaceServer) GetRegions(context.Context, *biz.Cluster) (*CloudResources, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRegions not implemented")
+}
+func (UnimplementedClusterInterfaceServer) GetZones(context.Context, *biz.Cluster) (*CloudResources, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetZones not implemented")
 }
 func (UnimplementedClusterInterfaceServer) Start(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error {
 	return status.Errorf(codes.Unimplemented, "method Start not implemented")
@@ -312,6 +328,24 @@ func _ClusterInterface_GetRegions_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ClusterInterfaceServer).GetRegions(ctx, req.(*biz.Cluster))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ClusterInterface_GetZones_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(biz.Cluster)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ClusterInterfaceServer).GetZones(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ClusterInterface_GetZones_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ClusterInterfaceServer).GetZones(ctx, req.(*biz.Cluster))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -403,6 +437,10 @@ var ClusterInterface_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRegions",
 			Handler:    _ClusterInterface_GetRegions_Handler,
+		},
+		{
+			MethodName: "GetZones",
+			Handler:    _ClusterInterface_GetZones_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

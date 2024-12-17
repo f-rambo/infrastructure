@@ -13,6 +13,8 @@ service ClusterInterface {
 
       rpc GetRegions(biz.cluster.Cluster) returns (infrastructure.api.cluster.CloudResources);
 
+      rpc GetZones(biz.cluster.Cluster) returns (infrastructure.api.cluster.CloudResources);
+
       rpc Start(biz.cluster.Cluster) returns (stream biz.cluster.Cluster);
 
       rpc Stop(biz.cluster.Cluster) returns (stream biz.cluster.Cluster);

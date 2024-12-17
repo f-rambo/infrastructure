@@ -25,10 +25,9 @@ import (
 func wireApp(confServer *conf.Server, logger log.Logger) (*kratos.App, func(), error) {
 	logInterface := interfaces.NewLogInterface(logger, confServer)
 	awsCloudUsecase := biz.NewAwsCloudUseCase(logger)
-	googleCloudUsecase := biz.NewGoogleCloudUseCase(logger)
 	aliCloudUsecase := biz.NewAliCloudUseCase(logger)
 	clusterUsecase := biz.NewClusterUsecase(logger)
-	clusterInterface := interfaces.NewClusterInterface(awsCloudUsecase, googleCloudUsecase, aliCloudUsecase, clusterUsecase, logger, confServer)
+	clusterInterface := interfaces.NewClusterInterface(awsCloudUsecase, aliCloudUsecase, clusterUsecase, logger, confServer)
 	grpcServer := server.NewGRPCServer(confServer, logInterface, clusterInterface, logger)
 	app := newApp(logger, grpcServer)
 	return app, func() {
