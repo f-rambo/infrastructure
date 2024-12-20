@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
@@ -23,6 +25,31 @@ const (
 
 	DefaultBandwidth = 5
 )
+
+func (c *Cluster) DecodeNodeIps(ips string) []string {
+	var result []string
+	cidrs := strings.Split(ips, ",")
+	for _, cidr := range cidrs {
+		cidr = strings.TrimSpace(cidr)
+		ip, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		for ip := ip.Mask(ipNet.Mask); ipNet.Contains(ip); inc(ip) {
+			result = append(result, ip.String())
+		}
+	}
+	return result
+}
+
+func inc(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] > 0 {
+			break
+		}
+	}
+}
 
 func (c *Cluster) GetCloudResource(resourceType ResourceType) []*CloudResource {
 	cloudResources := make([]*CloudResource, 0)
@@ -45,21 +72,6 @@ func (c *Cluster) AddCloudResource(resource *CloudResource) {
 		resource.Id = uuid.NewString()
 	}
 	c.CloudResources = append(c.CloudResources, resource)
-}
-
-func (c *Cluster) AddSubCloudResource(resourceType ResourceType, parentID string, resource *CloudResource) {
-	cloudResource := c.GetCloudResourceByID(resourceType, parentID)
-	if cloudResource == nil {
-		return
-	}
-	if cloudResource.SubResources == nil {
-		cloudResource.SubResources = make([]*CloudResource, 0)
-	}
-	resource.Type = resourceType
-	if resource.Id == "" {
-		resource.Id = uuid.NewString()
-	}
-	cloudResource.SubResources = append(cloudResource.SubResources, resource)
 }
 
 func (c *Cluster) GetCloudResourceByName(resourceType ResourceType, name string) *CloudResource {
@@ -92,12 +104,6 @@ func getCloudResourceByID(cloudResources []*CloudResource, id string) *CloudReso
 	for _, resource := range cloudResources {
 		if resource.Id == id {
 			return resource
-		}
-		if len(resource.SubResources) > 0 {
-			subResource := getCloudResourceByID(resource.SubResources, id)
-			if subResource != nil {
-				return subResource
-			}
 		}
 	}
 	return nil
@@ -250,17 +256,30 @@ func (c *Cluster) DeleteCloudResourceByTags(resourceType ResourceType, tagKeyVal
 	c.CloudResources = cloudResources
 }
 
-func (c *Cluster) GenerateNodeGroupName(nodeGroup *NodeGroup) {
-	nodeGroup.Name = strings.Join([]string{
-		c.Name,
-		nodeGroup.Type.String(),
-		nodeGroup.Os,
+func (c *Cluster) EncodeNodeGroup(nodeGroup *NodeGroup) string {
+	return strings.Join([]string{
+		strings.ToUpper(nodeGroup.Os),
+		strings.ToUpper(nodeGroup.Platform),
 		nodeGroup.Arch.String(),
-		cast.ToString(nodeGroup.Cpu),
-		cast.ToString(nodeGroup.Memory),
-		cast.ToString(nodeGroup.Gpu),
-		cast.ToString(nodeGroup.GpuSpec),
+		fmt.Sprintf("%d-%d-%d", nodeGroup.Cpu, nodeGroup.Memory, nodeGroup.Gpu),
+		nodeGroup.GpuSpec.String(),
 	}, "-")
+}
+
+func (c *Cluster) DecodeNodeGroup(nodeGroup string) *NodeGroup {
+	nodeGroupSlice := strings.Split(nodeGroup, "-")
+	if len(nodeGroupSlice) != 5 {
+		return nil
+	}
+	return &NodeGroup{
+		Os:       strings.ToLower(nodeGroupSlice[0]),
+		Platform: strings.ToLower(nodeGroupSlice[1]),
+		Arch:     NodeArchType(NodeArchType_value[nodeGroupSlice[2]]),
+		Cpu:      cast.ToInt32(nodeGroupSlice[3]),
+		Memory:   cast.ToInt32(nodeGroupSlice[4]),
+		Gpu:      cast.ToInt32(nodeGroupSlice[5]),
+		GpuSpec:  NodeGPUSpec(NodeGPUSpec_value[nodeGroupSlice[6]]),
+	}
 }
 
 func (c ClusterType) IsCloud() bool {
@@ -447,24 +466,34 @@ func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Clus
 	return nil
 }
 
+var ArchMap = map[string]NodeArchType{
+	"x86_64":  NodeArchType_AMD64,
+	"aarch64": NodeArchType_ARM64,
+}
+
+var GPUSpecMap = map[string]NodeGPUSpec{
+	"nvidia-a10":  NodeGPUSpec_NVIDIA_A10,
+	"nvidia-v100": NodeGPUSpec_NVIDIA_V100,
+	"nvidia-t4":   NodeGPUSpec_NVIDIA_T4,
+	"nvidia-p100": NodeGPUSpec_NVIDIA_P100,
+	"nvidia-p4":   NodeGPUSpec_NVIDIA_P4,
+}
+
 func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluster) error {
-	// todo need fix
+	ips := cluster.DecodeNodeIps(cluster.GetNodeIps())
 	errGroup, _ := errgroup.WithContext(ctx)
 	shellPath, err := utils.GetServerStorePathByNames(utils.ShellPackage)
 	if err != nil {
 		return err
 	}
-	for _, node := range cluster.Nodes {
-		if node.Ip == "" || node.User == "" {
-			continue
-		}
-		nodegroup := &NodeGroup{ClusterId: cluster.Id, Id: uuid.New().String()}
-		node := node
+	nodeInforMaps := make([]map[string]string, 0)
+	lock := new(sync.Mutex)
+	for _, ip := range ips {
+		nodeUser := cluster.NodeUser
+		nodeIp := ip
 		errGroup.Go(func() error {
-			remoteBash := utils.NewRemoteBash(
-				utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
-				c.log,
-			)
+			nodeInfoMap := make(map[string]string)
+			remoteBash := utils.NewRemoteBash(utils.Server{Name: nodeIp, Host: nodeIp, User: nodeUser, Port: 22, PrivateKey: cluster.PrivateKey}, c.log)
 			systemInfoOutput, err := remoteBash.Run("bash", utils.MergePath(shellPath, SystemInfoShell))
 			if err != nil {
 				return err
@@ -474,39 +503,97 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 				return err
 			}
 			for key, val := range systemInfoMap {
-				switch key {
-				case "os":
-					nodegroup.Os = cast.ToString(val)
-				// case "arch":
-				// 	nodegroup.Arch = cast.ToString(val)
-				case "mem":
-					nodegroup.Memory = cast.ToInt32(val)
-				case "cpu":
-					nodegroup.Cpu = cast.ToInt32(val)
-				case "gpu":
-					nodegroup.Gpu = cast.ToInt32(val)
-				// case "gpu_info":
-				// 	nodegroup.GpuSpec = cast.ToString(val)
-				case "disk":
-					nodegroup.DataDiskSize = cast.ToInt32(val)
-				case "ip":
-					node.Ip = cast.ToString(val)
-				}
+				nodeInfoMap[key] = cast.ToString(val)
 			}
-			cluster.GenerateNodeGroupName(nodegroup)
-			exitsNodeGroup := cluster.GetNodeGroupByName(nodegroup.Name)
-			if exitsNodeGroup == nil {
-				cluster.NodeGroups = append(cluster.NodeGroups, nodegroup)
-			} else {
-				nodegroup.Id = exitsNodeGroup.Id
-			}
-			node.NodeGroupId = nodegroup.Id
+			lock.Lock()
+			nodeInforMaps = append(nodeInforMaps, nodeInfoMap)
+			lock.Unlock()
 			return nil
 		})
 	}
 	err = errGroup.Wait()
 	if err != nil {
 		return err
+	}
+	if cluster.NodeGroups == nil {
+		cluster.NodeGroups = make([]*NodeGroup, 0)
+	}
+	if cluster.Nodes == nil {
+		cluster.Nodes = make([]*Node, 0)
+	}
+	nodeGroupMaps := make(map[string][]*Node)
+	for _, m := range nodeInforMaps {
+		nodegroup := &NodeGroup{}
+		node := &Node{}
+		for key, val := range m {
+			switch key {
+			case "os":
+				nodegroup.Os = val
+			case "arch":
+				arch, ok := ArchMap[val]
+				if !ok {
+					arch = NodeArchType_NodeArchType_UNSPECIFIED
+				}
+				nodegroup.Arch = arch
+			case "mem":
+				nodegroup.Memory = cast.ToInt32(val)
+			case "cpu":
+				nodegroup.Cpu = cast.ToInt32(val)
+			case "gpu":
+				nodegroup.Gpu = cast.ToInt32(val)
+			case "gpu_info":
+				gpuSpec, ok := GPUSpecMap[val]
+				if !ok {
+					gpuSpec = NodeGPUSpec_NodeGPUSpec_UNSPECIFIED
+				}
+				nodegroup.GpuSpec = gpuSpec
+			case "disk":
+				node.SystemDiskSize = cast.ToInt32(val)
+			case "ip":
+				node.Ip = cast.ToString(val)
+			}
+		}
+		nodeGroupMaps[cluster.EncodeNodeGroup(nodegroup)] = append(nodeGroupMaps[cluster.EncodeNodeGroup(nodegroup)], node)
+	}
+	for k, nodes := range nodeGroupMaps {
+		nodeGroupExits := false
+		nodeGrpupId := ""
+		for _, ng := range cluster.NodeGroups {
+			if cluster.EncodeNodeGroup(ng) == k {
+				nodeGrpupId = ng.Id
+				nodeGroupExits = true
+				break
+			}
+		}
+		if nodeGroupExits {
+			for _, node := range nodes {
+				nodeExits := false
+				for _, n := range cluster.Nodes {
+					if n.Ip == node.Ip {
+						nodeExits = true
+						break
+					}
+				}
+				if !nodeExits {
+					node.ClusterId = cluster.Id
+					node.NodeGroupId = nodeGrpupId
+					node.User = cluster.NodeUser
+					node.Name = node.Ip
+					cluster.Nodes = append(cluster.Nodes, node)
+				}
+			}
+			continue
+		}
+		nodegroup := cluster.DecodeNodeGroup(k)
+		nodegroup.Id = uuid.NewString()
+		for _, node := range nodes {
+			node.ClusterId = cluster.Id
+			node.NodeGroupId = nodegroup.Id
+			node.User = cluster.NodeUser
+			node.Name = node.Ip
+		}
+		cluster.NodeGroups = append(cluster.NodeGroups, nodegroup)
+		cluster.Nodes = append(cluster.Nodes, nodes...)
 	}
 	return nil
 }

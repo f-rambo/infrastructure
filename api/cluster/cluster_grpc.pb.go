@@ -20,16 +20,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ClusterInterface_Ping_FullMethodName                 = "/infrastructure.api.cluster.ClusterInterface/Ping"
-	ClusterInterface_GetRegions_FullMethodName           = "/infrastructure.api.cluster.ClusterInterface/GetRegions"
-	ClusterInterface_GetZones_FullMethodName             = "/infrastructure.api.cluster.ClusterInterface/GetZones"
-	ClusterInterface_Start_FullMethodName                = "/infrastructure.api.cluster.ClusterInterface/Start"
-	ClusterInterface_Stop_FullMethodName                 = "/infrastructure.api.cluster.ClusterInterface/Stop"
-	ClusterInterface_MigrateToBostionHost_FullMethodName = "/infrastructure.api.cluster.ClusterInterface/MigrateToBostionHost"
-	ClusterInterface_GetNodesSystemInfo_FullMethodName   = "/infrastructure.api.cluster.ClusterInterface/GetNodesSystemInfo"
-	ClusterInterface_Install_FullMethodName              = "/infrastructure.api.cluster.ClusterInterface/Install"
-	ClusterInterface_UnInstall_FullMethodName            = "/infrastructure.api.cluster.ClusterInterface/UnInstall"
-	ClusterInterface_HandlerNodes_FullMethodName         = "/infrastructure.api.cluster.ClusterInterface/HandlerNodes"
+	ClusterInterface_Ping_FullMethodName                     = "/infrastructure.api.cluster.ClusterInterface/Ping"
+	ClusterInterface_GetRegions_FullMethodName               = "/infrastructure.api.cluster.ClusterInterface/GetRegions"
+	ClusterInterface_GetZones_FullMethodName                 = "/infrastructure.api.cluster.ClusterInterface/GetZones"
+	ClusterInterface_CreateCloudBasicResource_FullMethodName = "/infrastructure.api.cluster.ClusterInterface/CreateCloudBasicResource"
+	ClusterInterface_DeleteCloudBasicResource_FullMethodName = "/infrastructure.api.cluster.ClusterInterface/DeleteCloudBasicResource"
+	ClusterInterface_ManageNodeResource_FullMethodName       = "/infrastructure.api.cluster.ClusterInterface/ManageNodeResource"
+	ClusterInterface_MigrateToBostionHost_FullMethodName     = "/infrastructure.api.cluster.ClusterInterface/MigrateToBostionHost"
+	ClusterInterface_GetNodesSystemInfo_FullMethodName       = "/infrastructure.api.cluster.ClusterInterface/GetNodesSystemInfo"
+	ClusterInterface_Install_FullMethodName                  = "/infrastructure.api.cluster.ClusterInterface/Install"
+	ClusterInterface_UnInstall_FullMethodName                = "/infrastructure.api.cluster.ClusterInterface/UnInstall"
+	ClusterInterface_HandlerNodes_FullMethodName             = "/infrastructure.api.cluster.ClusterInterface/HandlerNodes"
 )
 
 // ClusterInterfaceClient is the client API for ClusterInterface service.
@@ -39,8 +40,9 @@ type ClusterInterfaceClient interface {
 	Ping(ctx context.Context, in *PingMessage, opts ...grpc.CallOption) (grpc.ServerStreamingClient[PingMessage], error)
 	GetRegions(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (*CloudResources, error)
 	GetZones(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (*CloudResources, error)
-	Start(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
-	Stop(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
+	CreateCloudBasicResource(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
+	DeleteCloudBasicResource(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
+	ManageNodeResource(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
 	MigrateToBostionHost(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
 	GetNodesSystemInfo(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
 	Install(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error)
@@ -95,9 +97,9 @@ func (c *clusterInterfaceClient) GetZones(ctx context.Context, in *biz.Cluster, 
 	return out, nil
 }
 
-func (c *clusterInterfaceClient) Start(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
+func (c *clusterInterfaceClient) CreateCloudBasicResource(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[1], ClusterInterface_Start_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[1], ClusterInterface_CreateCloudBasicResource_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -112,11 +114,11 @@ func (c *clusterInterfaceClient) Start(ctx context.Context, in *biz.Cluster, opt
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ClusterInterface_StartClient = grpc.ServerStreamingClient[biz.Cluster]
+type ClusterInterface_CreateCloudBasicResourceClient = grpc.ServerStreamingClient[biz.Cluster]
 
-func (c *clusterInterfaceClient) Stop(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
+func (c *clusterInterfaceClient) DeleteCloudBasicResource(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[2], ClusterInterface_Stop_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[2], ClusterInterface_DeleteCloudBasicResource_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -131,11 +133,30 @@ func (c *clusterInterfaceClient) Stop(ctx context.Context, in *biz.Cluster, opts
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ClusterInterface_StopClient = grpc.ServerStreamingClient[biz.Cluster]
+type ClusterInterface_DeleteCloudBasicResourceClient = grpc.ServerStreamingClient[biz.Cluster]
+
+func (c *clusterInterfaceClient) ManageNodeResource(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[3], ClusterInterface_ManageNodeResource_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[biz.Cluster, biz.Cluster]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ClusterInterface_ManageNodeResourceClient = grpc.ServerStreamingClient[biz.Cluster]
 
 func (c *clusterInterfaceClient) MigrateToBostionHost(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[3], ClusterInterface_MigrateToBostionHost_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[4], ClusterInterface_MigrateToBostionHost_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +175,7 @@ type ClusterInterface_MigrateToBostionHostClient = grpc.ServerStreamingClient[bi
 
 func (c *clusterInterfaceClient) GetNodesSystemInfo(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[4], ClusterInterface_GetNodesSystemInfo_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[5], ClusterInterface_GetNodesSystemInfo_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +194,7 @@ type ClusterInterface_GetNodesSystemInfoClient = grpc.ServerStreamingClient[biz.
 
 func (c *clusterInterfaceClient) Install(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[5], ClusterInterface_Install_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[6], ClusterInterface_Install_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +213,7 @@ type ClusterInterface_InstallClient = grpc.ServerStreamingClient[biz.Cluster]
 
 func (c *clusterInterfaceClient) UnInstall(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[6], ClusterInterface_UnInstall_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[7], ClusterInterface_UnInstall_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +232,7 @@ type ClusterInterface_UnInstallClient = grpc.ServerStreamingClient[biz.Cluster]
 
 func (c *clusterInterfaceClient) HandlerNodes(ctx context.Context, in *biz.Cluster, opts ...grpc.CallOption) (grpc.ServerStreamingClient[biz.Cluster], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[7], ClusterInterface_HandlerNodes_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ClusterInterface_ServiceDesc.Streams[8], ClusterInterface_HandlerNodes_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -235,8 +256,9 @@ type ClusterInterfaceServer interface {
 	Ping(*PingMessage, grpc.ServerStreamingServer[PingMessage]) error
 	GetRegions(context.Context, *biz.Cluster) (*CloudResources, error)
 	GetZones(context.Context, *biz.Cluster) (*CloudResources, error)
-	Start(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
-	Stop(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
+	CreateCloudBasicResource(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
+	DeleteCloudBasicResource(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
+	ManageNodeResource(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
 	MigrateToBostionHost(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
 	GetNodesSystemInfo(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
 	Install(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error
@@ -261,11 +283,14 @@ func (UnimplementedClusterInterfaceServer) GetRegions(context.Context, *biz.Clus
 func (UnimplementedClusterInterfaceServer) GetZones(context.Context, *biz.Cluster) (*CloudResources, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetZones not implemented")
 }
-func (UnimplementedClusterInterfaceServer) Start(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error {
-	return status.Errorf(codes.Unimplemented, "method Start not implemented")
+func (UnimplementedClusterInterfaceServer) CreateCloudBasicResource(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error {
+	return status.Errorf(codes.Unimplemented, "method CreateCloudBasicResource not implemented")
 }
-func (UnimplementedClusterInterfaceServer) Stop(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error {
-	return status.Errorf(codes.Unimplemented, "method Stop not implemented")
+func (UnimplementedClusterInterfaceServer) DeleteCloudBasicResource(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error {
+	return status.Errorf(codes.Unimplemented, "method DeleteCloudBasicResource not implemented")
+}
+func (UnimplementedClusterInterfaceServer) ManageNodeResource(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error {
+	return status.Errorf(codes.Unimplemented, "method ManageNodeResource not implemented")
 }
 func (UnimplementedClusterInterfaceServer) MigrateToBostionHost(*biz.Cluster, grpc.ServerStreamingServer[biz.Cluster]) error {
 	return status.Errorf(codes.Unimplemented, "method MigrateToBostionHost not implemented")
@@ -350,27 +375,38 @@ func _ClusterInterface_GetZones_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ClusterInterface_Start_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _ClusterInterface_CreateCloudBasicResource_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(biz.Cluster)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(ClusterInterfaceServer).Start(m, &grpc.GenericServerStream[biz.Cluster, biz.Cluster]{ServerStream: stream})
+	return srv.(ClusterInterfaceServer).CreateCloudBasicResource(m, &grpc.GenericServerStream[biz.Cluster, biz.Cluster]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ClusterInterface_StartServer = grpc.ServerStreamingServer[biz.Cluster]
+type ClusterInterface_CreateCloudBasicResourceServer = grpc.ServerStreamingServer[biz.Cluster]
 
-func _ClusterInterface_Stop_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _ClusterInterface_DeleteCloudBasicResource_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(biz.Cluster)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(ClusterInterfaceServer).Stop(m, &grpc.GenericServerStream[biz.Cluster, biz.Cluster]{ServerStream: stream})
+	return srv.(ClusterInterfaceServer).DeleteCloudBasicResource(m, &grpc.GenericServerStream[biz.Cluster, biz.Cluster]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ClusterInterface_StopServer = grpc.ServerStreamingServer[biz.Cluster]
+type ClusterInterface_DeleteCloudBasicResourceServer = grpc.ServerStreamingServer[biz.Cluster]
+
+func _ClusterInterface_ManageNodeResource_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(biz.Cluster)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ClusterInterfaceServer).ManageNodeResource(m, &grpc.GenericServerStream[biz.Cluster, biz.Cluster]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ClusterInterface_ManageNodeResourceServer = grpc.ServerStreamingServer[biz.Cluster]
 
 func _ClusterInterface_MigrateToBostionHost_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(biz.Cluster)
@@ -450,13 +486,18 @@ var ClusterInterface_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 		{
-			StreamName:    "Start",
-			Handler:       _ClusterInterface_Start_Handler,
+			StreamName:    "CreateCloudBasicResource",
+			Handler:       _ClusterInterface_CreateCloudBasicResource_Handler,
 			ServerStreams: true,
 		},
 		{
-			StreamName:    "Stop",
-			Handler:       _ClusterInterface_Stop_Handler,
+			StreamName:    "DeleteCloudBasicResource",
+			Handler:       _ClusterInterface_DeleteCloudBasicResource_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "ManageNodeResource",
+			Handler:       _ClusterInterface_ManageNodeResource_Handler,
 			ServerStreams: true,
 		},
 		{

@@ -3,8 +3,10 @@ package interfaces
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/alibabacloud-go/tea/tea"
 	clusterApi "github.com/f-rambo/cloud-copilot/infrastructure/api/cluster"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/biz"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
@@ -31,6 +33,17 @@ func NewClusterInterface(awsUc *biz.AwsCloudUsecase, aliUc *biz.AliCloudUsecase,
 	}
 }
 
+func (c *ClusterInterface) permissionChecking(cluster *biz.Cluster) error {
+	if !cluster.Type.IsCloud() {
+		return nil
+	}
+	if cluster.Type == biz.ClusterType_AWS {
+	}
+	if cluster.Type == biz.ClusterType_ALICLOUD {
+	}
+	return nil
+}
+
 func (c *ClusterInterface) Ping(args *clusterApi.PingMessage, stream clusterApi.ClusterInterface_PingServer) error {
 	fmt.Printf("Received request: %s \n", args.Message)
 	for i := 0; i < 1; i++ {
@@ -45,10 +58,6 @@ func (c *ClusterInterface) Ping(args *clusterApi.PingMessage, stream clusterApi.
 		}
 		time.Sleep(time.Second * 5)
 	}
-	return nil
-}
-
-func (c *ClusterInterface) permissionChecking(_ *biz.Cluster) error {
 	return nil
 }
 
@@ -113,36 +122,36 @@ func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster)
 	response.Resources = cluster.GetCloudResource(biz.ResourceType_REGION)
 	return response, nil
 }
-func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.ClusterInterface_StartServer) error {
+
+func (c *ClusterInterface) CreateCloudBasicResource(cluster *biz.Cluster, stream clusterApi.ClusterInterface_CreateCloudBasicResourceServer) error {
+	defer stream.Send(cluster)
 	if err := c.permissionChecking(cluster); err != nil {
 		return err
 	}
-	if !cluster.Type.IsCloud() {
-		return errors.New("not support cloud provider")
-	}
-	if len(cluster.GetCloudResource(biz.ResourceType_AVAILABILITY_ZONES)) == 0 {
-		return errors.New("availability zones is empty")
-	}
-	defer stream.Send(cluster)
-	var funcs []func(context.Context, *biz.Cluster) error
 	if cluster.Type == biz.ClusterType_AWS {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.awsUc.Connections,
-			c.awsUc.ImportKeyPair,
-			c.awsUc.CreateNetwork,
-			c.awsUc.ManageInstance,
+		err := c.awsUc.Connections(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.CreateNetwork(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.ImportKeyPair(stream.Context(), cluster)
+		if err != nil {
+			return err
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.aliUc.Connections,
-			c.aliUc.ImportKeyPair,
-			c.aliUc.CreateNetwork,
-			c.aliUc.ManageInstance,
+		err := c.aliUc.Connections(stream.Context(), cluster)
+		if err != nil {
+			return err
 		}
-	}
-	for _, f := range funcs {
-		err := f(stream.Context(), cluster)
+		err = c.aliUc.CreateNetwork(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.ImportKeyPair(stream.Context(), cluster)
 		if err != nil {
 			return err
 		}
@@ -150,33 +159,79 @@ func (c *ClusterInterface) Start(cluster *biz.Cluster, stream clusterApi.Cluster
 	return nil
 }
 
-func (c *ClusterInterface) Stop(cluster *biz.Cluster, stream clusterApi.ClusterInterface_StopServer) error {
+func (c *ClusterInterface) DeleteCloudBasicResource(cluster *biz.Cluster, stream clusterApi.ClusterInterface_DeleteCloudBasicResourceServer) error {
+	defer stream.Send(cluster)
 	if err := c.permissionChecking(cluster); err != nil {
 		return err
 	}
-	if !cluster.Type.IsCloud() {
-		return errors.New("not support cloud provider")
-	}
-	defer stream.Send(cluster)
-	var funcs []func(context.Context, *biz.Cluster) error
 	if cluster.Type == biz.ClusterType_AWS {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.awsUc.Connections,
-			c.awsUc.ManageInstance,
-			c.awsUc.DeleteKeyPair,
-			c.awsUc.DeleteNetwork,
+		err := c.awsUc.Connections(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.DeleteNetwork(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.DeleteKeyPair(stream.Context(), cluster)
+		if err != nil {
+			return err
 		}
 	}
 	if cluster.Type == biz.ClusterType_ALICLOUD {
-		funcs = []func(context.Context, *biz.Cluster) error{
-			c.aliUc.Connections,
-			c.aliUc.ManageInstance,
-			c.aliUc.DeleteKeyPair,
-			c.aliUc.DeleteNetwork,
+		err := c.aliUc.Connections(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.DeleteNetwork(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.DeleteKeyPair(stream.Context(), cluster)
+		if err != nil {
+			return err
 		}
 	}
-	for _, f := range funcs {
-		err := f(stream.Context(), cluster)
+	return nil
+}
+
+func (c *ClusterInterface) ManageNodeResource(cluster *biz.Cluster, stream clusterApi.ClusterInterface_ManageNodeResourceServer) error {
+	defer stream.Send(cluster)
+	if err := c.permissionChecking(cluster); err != nil {
+		return err
+	}
+	if cluster.Type == biz.ClusterType_AWS {
+		err := c.awsUc.Connections(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.ManageSecurityGroup(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.ManageInstance(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.ManageSLB(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+	}
+	if cluster.Type == biz.ClusterType_ALICLOUD {
+		err := c.aliUc.Connections(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.ManageSecurityGroup(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.ManageInstance(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.ManageSLB(stream.Context(), cluster)
 		if err != nil {
 			return err
 		}
@@ -225,10 +280,82 @@ func (c *ClusterInterface) MigrateToBostionHost(cluster *biz.Cluster, stream clu
 
 func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clusterApi.ClusterInterface_GetNodesSystemInfoServer) error {
 	defer stream.Send(cluster)
-	err := c.clusterUc.GetNodesSystemInfo(stream.Context(), cluster)
-	if err != nil {
+	if !cluster.Type.IsCloud() {
+		err := c.clusterUc.GetNodesSystemInfo(stream.Context(), cluster)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := c.permissionChecking(cluster); err != nil {
 		return err
 	}
+	for _, nodeGroup := range cluster.NodeGroups {
+		isFindNode := false
+		for _, node := range cluster.Nodes {
+			if node.NodeGroupId != nodeGroup.Id {
+				continue
+			}
+			if node.Status == biz.NodeStatus_NODE_FINDING {
+				isFindNode = true
+				break
+			}
+		}
+		if !isFindNode {
+			continue
+		}
+		if cluster.Type == biz.ClusterType_AWS {
+			err := c.awsUc.Connections(stream.Context(), cluster)
+			if err != nil {
+				return err
+			}
+		}
+		if cluster.Type == biz.ClusterType_ALICLOUD {
+			err := c.aliUc.Connections(stream.Context(), cluster)
+			if err != nil {
+				return err
+			}
+			image, err := c.aliUc.FindImage(cluster.Region, nodeGroup.Arch)
+			if err != nil {
+				return err
+			}
+			instanceTypes, err := c.aliUc.FindInstanceType(biz.FindInstanceTypeParam{
+				CPU:           nodeGroup.Cpu,
+				Memory:        nodeGroup.Memory,
+				Arch:          nodeGroup.Arch,
+				GPU:           nodeGroup.Gpu,
+				GPUSpec:       nodeGroup.GpuSpec,
+				NodeGroupType: nodeGroup.Type,
+			})
+			if err != nil {
+				return err
+			}
+			if len(instanceTypes) == 0 {
+				return errors.New("Not found instance type")
+			}
+			instanceTypeId := ""
+			backupInstanceTypeIds := make([]string, 0)
+			for _, v := range instanceTypes {
+				if nodeGroup.Memory != int32(tea.Float32Value(v.MemorySize)) {
+					nodeGroup.Memory = int32(tea.Float32Value(v.MemorySize))
+				}
+				if instanceTypeId == "" {
+					instanceTypeId = tea.StringValue(v.InstanceTypeId)
+					continue
+				}
+				backupInstanceTypeIds = append(backupInstanceTypeIds, tea.StringValue(v.InstanceTypeId))
+			}
+			for _, node := range cluster.Nodes {
+				if node.NodeGroupId != nodeGroup.Id {
+					continue
+				}
+				node.ImageId = tea.StringValue(image.ImageId)
+				node.InstanceType = instanceTypeId
+				node.BackupInstanceIds = strings.Join(backupInstanceTypeIds, ",")
+			}
+		}
+	}
+
 	return nil
 }
 
