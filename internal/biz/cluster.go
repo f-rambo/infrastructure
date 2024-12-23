@@ -356,9 +356,36 @@ func (n *Node) DeleteNode() bool {
 	return n.Status == NodeStatus_NODE_DELETING || n.Status == NodeStatus_NODE_DELETED
 }
 
-func (c *Cluster) MigrateToBostionHost(ctx context.Context) error {
+func (c *Cluster) GetVpcName() string {
+	return fmt.Sprintf("%s-vpc", c.Name)
+}
 
-	return nil
+func (c *Cluster) GetkeyPairName() string {
+	return fmt.Sprintf("%s-keypair", c.Name)
+}
+
+func (c *Cluster) GetSubnetName(zoneId string) string {
+	return fmt.Sprintf("%s-%s-subnet", c.Name, zoneId)
+}
+
+func (c *Cluster) GetEipName(zoneId string) string {
+	return fmt.Sprintf("%s-%s-eip", c.Name, zoneId)
+}
+
+func (c *Cluster) GetNatgatewayName(zoneId string) string {
+	return fmt.Sprintf("%s-%s-natgateway", c.Name, zoneId)
+}
+
+func (c *Cluster) GetSecurityGroupName() string {
+	return fmt.Sprintf("%s-securitygroup", c.Name)
+}
+
+func (c *Cluster) GetRouteTableName(zoneId string) string {
+	return fmt.Sprintf("%s-%s-route-table", c.Name, zoneId)
+}
+
+func (c *Cluster) GetLoadBalancerName() string {
+	return fmt.Sprintf("%s-slb", c.Name)
 }
 
 type ClusterUsecase struct {

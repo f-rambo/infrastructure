@@ -177,10 +177,12 @@ message Node {
       string backup_instance_ids = 10; // @gotags: gorm:"column:backup_instance_ids; default:''; NOT NULL"
       string instance_type = 11; // @gotags: gorm:"column:instance_type; default:''; NOT NULL"
       int32 system_disk_size = 12; // @gotags: gorm:"column:system_disk_size; default:0; NOT NULL"
-      int32 data_disk_size = 13; // @gotags: gorm:"column:data_disk_size; default:0; NOT NULL"
-      int64 cluster_id = 14; // @gotags: gorm:"column:cluster_id; default:0; NOT NULL"
-      string node_group_id = 15; // @gotags: gorm:"column:node_group_id; default:''; NOT NULL"
-      NodeError error_info = 16; // @gotags: gorm:"column:error_info; default:''; NOT NULL"
+      string system_disk_name = 13; // @gotags: gorm:"column:system_disk_name; default:''; NOT NULL"
+      int32 data_disk_size = 14; // @gotags: gorm:"column:data_disk_size; default:0; NOT NULL"
+      string data_disk_name = 15; // @gotags: gorm:"column:data_disk_name; default:''; NOT NULL"
+      int64 cluster_id = 16; // @gotags: gorm:"column:cluster_id; default:0; NOT NULL"
+      string node_group_id = 17; // @gotags: gorm:"column:node_group_id; default:''; NOT NULL"
+      NodeError error_info = 18; // @gotags: gorm:"column:error_info; default:''; NOT NULL"
 }
 
 message CloudResource {

@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/alibabacloud-go/tea/tea"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	clusterApi "github.com/f-rambo/cloud-copilot/infrastructure/api/cluster"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/biz"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
 	"github.com/go-kratos/kratos/v2/log"
-	"github.com/pkg/errors"
 )
 
 type ClusterInterface struct {
@@ -304,10 +304,44 @@ func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clust
 		if !isFindNode {
 			continue
 		}
+		imageId := ""
+		systemDiskName := ""
+		instanceTypeId := ""
+		nodeUser := "root"
+		backupInstanceTypeIds := make([]string, 0)
 		if cluster.Type == biz.ClusterType_AWS {
 			err := c.awsUc.Connections(stream.Context(), cluster)
 			if err != nil {
 				return err
+			}
+			image, err := c.awsUc.FindImage(stream.Context(), nodeGroup.Arch)
+			if err != nil {
+				return err
+			}
+			imageId = aws.ToString(image.ImageId)
+			nodeUser = biz.DetermineUsername(aws.ToString(image.Name), aws.ToString(image.Description))
+			systemDiskName = aws.ToString(image.RootDeviceName)
+			instanceTypes, err := c.awsUc.FindInstanceType(stream.Context(), biz.FindInstanceTypeParam{
+				CPU:           nodeGroup.Cpu,
+				Memory:        nodeGroup.Memory,
+				Arch:          nodeGroup.Arch,
+				GPU:           nodeGroup.Gpu,
+				GPUSpec:       nodeGroup.GpuSpec,
+				NodeGroupType: nodeGroup.Type,
+			})
+			if err != nil {
+				return err
+			}
+			for _, v := range instanceTypes {
+				memSize := int32(aws.ToInt64(v.MemoryInfo.SizeInMiB) / 1024)
+				if nodeGroup.Memory != memSize {
+					nodeGroup.Memory = memSize
+				}
+				if instanceTypeId == "" {
+					instanceTypeId = string(v.InstanceType)
+					continue
+				}
+				backupInstanceTypeIds = append(backupInstanceTypeIds, string(v.InstanceType))
 			}
 		}
 		if cluster.Type == biz.ClusterType_ALICLOUD {
@@ -319,6 +353,7 @@ func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clust
 			if err != nil {
 				return err
 			}
+			imageId = tea.StringValue(image.ImageId)
 			instanceTypes, err := c.aliUc.FindInstanceType(biz.FindInstanceTypeParam{
 				CPU:           nodeGroup.Cpu,
 				Memory:        nodeGroup.Memory,
@@ -330,11 +365,6 @@ func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clust
 			if err != nil {
 				return err
 			}
-			if len(instanceTypes) == 0 {
-				return errors.New("Not found instance type")
-			}
-			instanceTypeId := ""
-			backupInstanceTypeIds := make([]string, 0)
 			for _, v := range instanceTypes {
 				if nodeGroup.Memory != int32(tea.Float32Value(v.MemorySize)) {
 					nodeGroup.Memory = int32(tea.Float32Value(v.MemorySize))
@@ -345,17 +375,18 @@ func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clust
 				}
 				backupInstanceTypeIds = append(backupInstanceTypeIds, tea.StringValue(v.InstanceTypeId))
 			}
-			for _, node := range cluster.Nodes {
-				if node.NodeGroupId != nodeGroup.Id {
-					continue
-				}
-				node.ImageId = tea.StringValue(image.ImageId)
-				node.InstanceType = instanceTypeId
-				node.BackupInstanceIds = strings.Join(backupInstanceTypeIds, ",")
+		}
+		for _, node := range cluster.Nodes {
+			if node.NodeGroupId != nodeGroup.Id {
+				continue
 			}
+			node.User = nodeUser
+			node.ImageId = imageId
+			node.SystemDiskName = systemDiskName
+			node.InstanceType = instanceTypeId
+			node.BackupInstanceIds = strings.Join(backupInstanceTypeIds, ",")
 		}
 	}
-
 	return nil
 }
 
