@@ -135,10 +135,10 @@ func (a *AwsCloudUsecase) CloseSSh(ctx context.Context, cluster *Cluster) error 
 	return a.ManageSLB(ctx, cluster)
 }
 
-// create network(vpc, subnet, eip,nat gateway, route table, security group)
 func (a *AwsCloudUsecase) CreateNetwork(ctx context.Context, cluster *Cluster) error {
 	funcs := []func(context.Context, *Cluster) error{
 		a.createVPC,
+		a.createInternetGateway,
 		a.createSubnets,
 		a.createEips,
 		a.createNatGateways,
@@ -210,34 +210,35 @@ func (a *AwsCloudUsecase) DeleteNetwork(ctx context.Context, cluster *Cluster) e
 	if vpc == nil {
 		return errors.New("vpc not found")
 	}
-	// Delete vpc s3 endpoints
-	// for _, endpoint := range cluster.GetCloudResource(ResourceType_VPC_ENDPOINT_S3) {
-	// 	_, err := a.ec2Client.DescribeVpcEndpoints(ctx, &ec2.DescribeVpcEndpointsInput{
-	// 		VpcEndpointIds: []string{endpoint.RefId},
-	// 	})
-	// 	if err != nil && strings.Contains(err.Error(), AwsNotFound) {
-	// 		a.log.Infof("No vpc endpoint found with name: %s", endpoint.Name)
-	// 		continue
-	// 	}
-	// 	if err != nil {
-	// 		return errors.Wrap(err, "failed to describe vpc endpoint")
-	// 	}
-	// 	_, err = a.ec2Client.DeleteVpcEndpoints(ctx, &ec2.DeleteVpcEndpointsInput{
-	// 		VpcEndpointIds: []string{endpoint.RefId},
-	// 	})
-	// 	if err != nil {
-	// 		return errors.Wrap(err, "failed to delete vpc endpoint")
-	// 	}
-	// }
-	// cluster.DeleteCloudResource(ResourceType_VPC_ENDPOINT_S3)
 
-	// Step 1: Delete security group
+	// Delete SLB
+	for _, slb := range cluster.GetCloudResource(ResourceType_LOAD_BALANCER) {
+		_, err := a.elbv2Client.DescribeLoadBalancers(ctx, &elasticloadbalancingv2.DescribeLoadBalancersInput{
+			LoadBalancerArns: []string{slb.RefId},
+		})
+		if err != nil && strings.Contains(err.Error(), AwsNotFound) {
+			cluster.DeleteCloudResourceByID(ResourceType_LOAD_BALANCER, slb.Id)
+			continue
+		}
+		if err != nil {
+			return errors.Wrap(err, "failed to describe SLB")
+		}
+		_, err = a.elbv2Client.DeleteLoadBalancer(ctx, &elasticloadbalancingv2.DeleteLoadBalancerInput{
+			LoadBalancerArn: &slb.RefId,
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to delete SLB")
+		}
+		cluster.DeleteCloudResourceByID(ResourceType_LOAD_BALANCER, slb.Id)
+	}
+
+	// Delete security group
 	for _, sg := range cluster.GetCloudResource(ResourceType_SECURITY_GROUP) {
 		_, err := a.ec2Client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
 			GroupIds: []string{sg.RefId},
 		})
 		if err != nil && strings.Contains(err.Error(), AwsNotFound) {
-			a.log.Infof("No security group found with name: %s", sg.Name)
+			cluster.DeleteCloudResourceByID(ResourceType_SECURITY_GROUP, sg.Id)
 			continue
 		}
 		if err != nil {
@@ -249,47 +250,38 @@ func (a *AwsCloudUsecase) DeleteNetwork(ctx context.Context, cluster *Cluster) e
 		if err != nil {
 			return errors.Wrap(err, "failed to delete security group")
 		}
+		cluster.DeleteCloudResourceByID(ResourceType_SECURITY_GROUP, sg.Id)
 	}
-	cluster.DeleteCloudResource(ResourceType_SECURITY_GROUP)
 
-	// Step 2: Delete route tables
-	rts := cluster.GetCloudResource(ResourceType_ROUTE_TABLE)
-	for _, rt := range rts {
-		_, err := a.ec2Client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
-			RouteTableIds: []string{rt.RefId},
+	// Delete the eip
+	for _, eip := range cluster.GetCloudResource(ResourceType_ELASTIC_IP) {
+		_, err := a.ec2Client.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{
+			AllocationIds: []string{eip.RefId},
 		})
 		if err != nil && strings.Contains(err.Error(), AwsNotFound) {
-			a.log.Infof("No route table found with name: %s", rt.Name)
+			cluster.DeleteCloudResourceByID(ResourceType_ELASTIC_IP, eip.Id)
 			continue
 		}
 		if err != nil {
-			return errors.Wrap(err, "failed to describe route table")
+			return errors.Wrap(err, "failed to describe eip")
 		}
-		// for _, subRtassoc := range rt.SubResources {
-		// 	_, err = a.ec2Client.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{
-		// 		AssociationId: aws.String(subRtassoc.RefId),
-		// 	})
-		// 	if err != nil {
-		// 		return errors.Wrap(err, "failed to disassociate route table")
-		// 	}
-		// }
-		_, err = a.ec2Client.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{
-			RouteTableId: aws.String(rt.RefId),
+		_, err = a.ec2Client.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{
+			AllocationId: aws.String(eip.RefId),
 		})
 		if err != nil {
-			return errors.Wrap(err, "failed to delete route table")
+			return errors.Wrap(err, "failed to release Elastic IP")
 		}
+		cluster.DeleteCloudResourceByID(ResourceType_ELASTIC_IP, eip.Id)
 	}
-	cluster.DeleteCloudResource(ResourceType_ROUTE_TABLE)
 
-	// Step 4: Delete NAT Gateways
+	// Delete NAT Gateways
 	natGwIDs := make([]string, 0)
 	for _, natGw := range cluster.GetCloudResource(ResourceType_NAT_GATEWAY) {
 		_, err := a.ec2Client.DescribeNatGateways(ctx, &ec2.DescribeNatGatewaysInput{
 			NatGatewayIds: []string{natGw.RefId},
 		})
 		if err != nil && strings.Contains(err.Error(), AwsNotFound) {
-			a.log.Infof("No NAT Gateway found with Name: %s", natGw.Name)
+			cluster.DeleteCloudResourceByID(ResourceType_NAT_GATEWAY, natGw.Id)
 			continue
 		}
 		if err != nil {
@@ -313,62 +305,35 @@ func (a *AwsCloudUsecase) DeleteNetwork(ctx context.Context, cluster *Cluster) e
 	}
 	cluster.DeleteCloudResource(ResourceType_NAT_GATEWAY)
 
-	// Release Elastic IPs associated with NAT Gateways
-	for _, addr := range cluster.GetCloudResource(ResourceType_ELASTIC_IP) {
-		_, err := a.ec2Client.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{
-			AllocationIds: []string{addr.RefId},
+	// Delete route tables
+	rts := cluster.GetCloudResource(ResourceType_ROUTE_TABLE)
+	for _, rt := range rts {
+		_, err := a.ec2Client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
+			RouteTableIds: []string{rt.RefId},
 		})
 		if err != nil && strings.Contains(err.Error(), AwsNotFound) {
-			a.log.Infof("No Elastic IP found with name: %s", addr.Name)
+			cluster.DeleteCloudResourceByID(ResourceType_ROUTE_TABLE, rt.Id)
 			continue
 		}
 		if err != nil {
-			return errors.Wrap(err, "failed to describe Elastic IP")
+			return errors.Wrap(err, "failed to describe route table")
 		}
-		_, err = a.ec2Client.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{
-			AllocationId: aws.String(addr.RefId),
+		_, err = a.ec2Client.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{
+			RouteTableId: aws.String(rt.RefId),
 		})
 		if err != nil {
-			return errors.Wrap(err, "failed to release Elastic IP")
+			return errors.Wrap(err, "failed to delete route table")
 		}
 	}
-	cluster.DeleteCloudResource(ResourceType_ELASTIC_IP)
+	cluster.DeleteCloudResource(ResourceType_ROUTE_TABLE)
 
-	// Step 3: Delete Internet Gateway
-	for _, igw := range cluster.GetCloudResource(ResourceType_INTERNET_GATEWAY) {
-		_, err := a.ec2Client.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{
-			InternetGatewayIds: []string{igw.RefId},
-		})
-		if err != nil && strings.Contains(err.Error(), AwsNotFound) {
-			a.log.Infof("No Internet Gateway found with name: %s", igw.Name)
-			continue
-		}
-		if err != nil {
-			return errors.Wrap(err, "failed to describe Internet Gateway")
-		}
-		_, err = a.ec2Client.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
-			InternetGatewayId: aws.String(igw.RefId),
-			VpcId:             aws.String(vpc.RefId),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to detach Internet Gateway")
-		}
-		_, err = a.ec2Client.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
-			InternetGatewayId: aws.String(igw.RefId),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to delete Internet Gateway")
-		}
-	}
-	cluster.DeleteCloudResource(ResourceType_INTERNET_GATEWAY)
-
-	// // Step 5: Delete Subnets
+	// Delete Subnets
 	for _, subnet := range cluster.GetCloudResource(ResourceType_SUBNET) {
 		_, err := a.ec2Client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
 			SubnetIds: []string{subnet.RefId},
 		})
 		if err != nil && strings.Contains(err.Error(), AwsNotFound) {
-			a.log.Infof("No subnet found with Name: %s", subnet.Name)
+			cluster.DeleteCloudResourceByID(ResourceType_SUBNET, subnet.Id)
 			continue
 		}
 		if err != nil {
@@ -403,26 +368,6 @@ func (a *AwsCloudUsecase) DeleteNetwork(ctx context.Context, cluster *Cluster) e
 	}
 	cluster.DeleteCloudResource(ResourceType_VPC)
 
-	// step 7: Delete SLB
-	for _, slb := range cluster.GetCloudResource(ResourceType_LOAD_BALANCER) {
-		_, err := a.elbv2Client.DescribeLoadBalancers(ctx, &elasticloadbalancingv2.DescribeLoadBalancersInput{
-			LoadBalancerArns: []string{slb.RefId},
-		})
-		if err != nil && strings.Contains(err.Error(), AwsNotFound) {
-			a.log.Warnf("No SLB found with name: %s", slb.Name)
-			continue
-		}
-		if err != nil {
-			return errors.Wrap(err, "failed to describe SLB")
-		}
-		_, err = a.elbv2Client.DeleteLoadBalancer(ctx, &elasticloadbalancingv2.DeleteLoadBalancerInput{
-			LoadBalancerArn: &slb.RefId,
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to delete SLB")
-		}
-	}
-	cluster.DeleteCloudResource(ResourceType_LOAD_BALANCER)
 	return nil
 }
 
@@ -447,25 +392,6 @@ func (a *AwsCloudUsecase) DeleteKeyPair(ctx context.Context, cluster *Cluster) e
 	return nil
 }
 
-// get instance quota number
-func (a *AwsCloudUsecase) GetInstanceQuota(ctx context.Context, cluster *Cluster) error {
-	servicequotas, err := a.servicequotasClient.ListServiceQuotas(ctx, &servicequotas.ListServiceQuotasInput{
-		ServiceCode: aws.String("ec2"),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to list service quotas")
-	}
-	for _, quota := range servicequotas.Quotas {
-		fmt.Println("Quota service code:", aws.ToString(quota.ServiceCode))
-		fmt.Println("Quota service name:", aws.ToString(quota.ServiceName))
-		fmt.Printf("Quota Name: %s\n", aws.ToString(quota.QuotaName))
-		fmt.Printf("Quota Value: %.2f\n", aws.ToFloat64(quota.Value))
-		fmt.Printf("Quota Type: %s\n", aws.ToString(quota.Unit))
-		fmt.Println("-----")
-	}
-	return nil
-}
-
 func (a *AwsCloudUsecase) checkingInstanceInventory(ctx context.Context, instanceType, zoneId string) (bool, error) {
 	res, err := a.ec2Client.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
 		Filters: []ec2Types.Filter{{
@@ -476,13 +402,12 @@ func (a *AwsCloudUsecase) checkingInstanceInventory(ctx context.Context, instanc
 			Values: []string{zoneId},
 		}},
 		LocationType: ec2Types.LocationTypeAvailabilityZone,
-		MaxResults:   aws.Int32(1),
 	})
 	if err != nil {
 		return false, errors.Wrap(err, "failed to describe instance type offerings")
 	}
 	for _, v := range res.InstanceTypeOfferings {
-		if string(v.InstanceType) == instanceType && string(v.LocationType) == zoneId {
+		if string(v.InstanceType) == instanceType && aws.ToString(v.Location) == zoneId {
 			return true, nil
 		}
 	}
@@ -606,7 +531,7 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 				{
 					DeviceName: aws.String(node.SystemDiskName),
 					Ebs: &ec2Types.EbsBlockDevice{
-						// VolumeSize:          aws.Int32(nodeGroup.SystemDiskSize),
+						VolumeSize:          aws.Int32(node.SystemDiskSize),
 						VolumeType:          ec2Types.VolumeType(ec2Types.VolumeTypeGp3),
 						DeleteOnTermination: aws.Bool(true),
 					},
@@ -614,12 +539,6 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 			}
 			instancesInput.BlockDeviceMappings = blockDeviceMappings
 			instancesInput.SubnetId = aws.String(privateSubnet.RefId)
-			instancesInput.TagSpecifications = []ec2Types.TagSpecification{
-				{
-					ResourceType: ec2Types.ResourceTypeInstance,
-					Tags:         a.mapToEc2Tags(cluster.DecodeTags(node.Labels)),
-				},
-			}
 			instancesOutput, err := a.ec2Client.RunInstances(ctx, instancesInput)
 			if err != nil {
 				return errors.Wrap(err, "failed to run instances")
@@ -720,6 +639,79 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 	return nil
 }
 
+func (a *AwsCloudUsecase) createInternetGateway(ctx context.Context, cluster *Cluster) error {
+	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
+	if vpc == nil {
+		return errors.New("vpc not found")
+	}
+	internetgatewayRes, err := a.ec2Client.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{
+		Filters: []ec2Types.Filter{
+			{Name: aws.String("attachment.state"), Values: []string{"available"}},
+			{Name: aws.String("attachment.vpc-id"), Values: []string{vpc.RefId}},
+		},
+		MaxResults: aws.Int32(100),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to describe internet gateways")
+	}
+	// clear history internet gateway
+	for _, inter := range cluster.GetCloudResource(ResourceType_INTERNET_GATEWAY) {
+		exits := false
+		for _, v := range internetgatewayRes.InternetGateways {
+			if inter.RefId == aws.ToString(v.InternetGatewayId) {
+				exits = true
+				break
+			}
+		}
+		if !exits {
+			cluster.DeleteCloudResourceByID(ResourceType_INTERNET_GATEWAY, inter.Id)
+		}
+	}
+	name := fmt.Sprintf("%s-%s", cluster.Name, "internet-gateway")
+	tag := GetTags()
+	tag[ResourceTypeKeyValue_NAME] = name
+	for _, internetgateway := range internetgatewayRes.InternetGateways {
+		if cluster.GetCloudResourceByRefID(ResourceType_INTERNET_GATEWAY, aws.ToString(internetgateway.InternetGatewayId)) != nil {
+			a.log.Infof("internet gateway %s already exists", aws.ToString(internetgateway.InternetGatewayId))
+			return nil
+		}
+		cluster.AddCloudResource(&CloudResource{
+			RefId: aws.ToString(internetgateway.InternetGatewayId),
+			Name:  name,
+			Tags:  cluster.EncodeTags(tag),
+			Type:  ResourceType_INTERNET_GATEWAY,
+		})
+	}
+	if cluster.GetSingleCloudResource(ResourceType_INTERNET_GATEWAY) != nil {
+		return nil
+	}
+	createInternetGatewayRes, err := a.ec2Client.CreateInternetGateway(ctx, &ec2.CreateInternetGatewayInput{
+		TagSpecifications: []ec2Types.TagSpecification{
+			{
+				ResourceType: ec2Types.ResourceTypeInternetGateway,
+				Tags:         a.mapToEc2Tags(tag),
+			},
+		},
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to create internet gateway")
+	}
+	_, err = a.ec2Client.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: createInternetGatewayRes.InternetGateway.InternetGatewayId,
+		VpcId:             aws.String(vpc.RefId),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to attach internet gateway")
+	}
+	cluster.AddCloudResource(&CloudResource{
+		RefId: aws.ToString(createInternetGatewayRes.InternetGateway.InternetGatewayId),
+		Name:  name,
+		Tags:  cluster.EncodeTags(tag),
+		Type:  ResourceType_INTERNET_GATEWAY,
+	})
+	return nil
+}
+
 // Check and Create subnets
 func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) error {
 	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
@@ -775,16 +767,16 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		}
 		zoneSubnets[aws.ToString(subnet.AvailabilityZone)] = subnet
 	}
-	for zoneId, subnet := range zoneSubnets {
+	for zoneName, subnet := range zoneSubnets {
 		if cluster.GetCloudResourceByRefID(ResourceType_SUBNET, aws.ToString(subnet.SubnetId)) != nil {
 			a.log.Infof("subnet %s already exists", aws.ToString(subnet.SubnetId))
 			continue
 		}
-		name := cluster.GetSubnetName(zoneId)
+		name := cluster.GetSubnetName(zoneName)
 		tags := GetTags()
 		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
 		tags[ResourceTypeKeyValue_NAME] = name
-		tags[ResourceTypeKeyValue_ZONE_ID] = zoneId
+		tags[ResourceTypeKeyValue_ZONE_ID] = zoneName
 		a.createTags(ctx, aws.ToString(subnet.SubnetId), ResourceType_SUBNET, tags)
 		cluster.AddCloudResource(&CloudResource{
 			Name:  name,
@@ -798,11 +790,11 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 
 	// Create subnets
 	for _, zone := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		name := cluster.GetSubnetName(zone.RefId)
+		name := cluster.GetSubnetName(zone.Name)
 		tags := GetTags()
 		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
 		tags[ResourceTypeKeyValue_NAME] = name
-		tags[ResourceTypeKeyValue_ZONE_ID] = zone.RefId
+		tags[ResourceTypeKeyValue_ZONE_ID] = zone.Name
 		if cluster.GetCloudResourceByTags(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: name}) != nil {
 			continue
 		}
@@ -814,7 +806,7 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		subnetOutput, err := a.ec2Client.CreateSubnet(ctx, &ec2.CreateSubnetInput{
 			VpcId:            aws.String(vpc.RefId),
 			CidrBlock:        aws.String(cidr),
-			AvailabilityZone: aws.String(zone.RefId),
+			AvailabilityZone: aws.String(zone.Name),
 			TagSpecifications: []ec2Types.TagSpecification{
 				{
 					ResourceType: ec2Types.ResourceTypeSubnet,
@@ -859,9 +851,9 @@ func (a *AwsCloudUsecase) createEips(ctx context.Context, cluster *Cluster) erro
 
 	// one zone one eip for nat gateway
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		name := cluster.GetEipName(az.RefId)
+		name := cluster.GetEipName(az.Name)
 		tags := GetTags()
-		tags[ResourceTypeKeyValue_ZONE_ID] = az.RefId
+		tags[ResourceTypeKeyValue_ZONE_ID] = az.Name
 		tags[ResourceTypeKeyValue_NAME] = name
 		for _, eip := range eipRes.Addresses {
 			if eip.Domain != ec2Types.DomainTypeVpc || eip.AssociationId != nil || eip.InstanceId != nil || eip.NetworkInterfaceId != nil {
@@ -871,7 +863,7 @@ func (a *AwsCloudUsecase) createEips(ctx context.Context, cluster *Cluster) erro
 				a.log.Infof("elastic ip %s already exists", aws.ToString(eip.PublicIp))
 				continue
 			}
-			if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId}) != nil {
+			if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.Name}) != nil {
 				break
 			}
 			cluster.AddCloudResource(&CloudResource{
@@ -883,7 +875,7 @@ func (a *AwsCloudUsecase) createEips(ctx context.Context, cluster *Cluster) erro
 			})
 			a.log.Infof("elastic ip %s already exists", aws.ToString(eip.PublicIp))
 		}
-		if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId}) != nil {
+		if cluster.GetCloudResourceByTags(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.Name}) != nil {
 			continue
 		}
 		eipOutput, err := a.ec2Client.AllocateAddress(ctx, &ec2.AllocateAddressInput{
@@ -905,7 +897,7 @@ func (a *AwsCloudUsecase) createEips(ctx context.Context, cluster *Cluster) erro
 			Tags:  cluster.EncodeTags(tags),
 			Type:  ResourceType_ELASTIC_IP,
 		})
-		a.log.Infof("elastic ip %s allocated for %s", name, az.RefId)
+		a.log.Infof("elastic ip %s allocated for %s", name, az.Name)
 		time.Sleep(time.Second * TimeOutSecond)
 	}
 	return nil
@@ -931,7 +923,7 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 	for _, natgatewayResource := range cluster.GetCloudResource(ResourceType_NAT_GATEWAY) {
 		natgatewayResourceExits := false
 		for _, natgateway := range natgatewayRes.NatGateways {
-			if aws.ToString(natgateway.NatGatewayId) == natgatewayResource.RefId {
+			if aws.ToString(natgateway.NatGatewayId) == natgatewayResource.RefId && natgateway.State == ec2Types.NatGatewayStateAvailable {
 				natgatewayResourceExits = true
 				break
 			}
@@ -949,7 +941,7 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 		if natGateway.SubnetId == nil || len(natGateway.NatGatewayAddresses) == 0 {
 			continue
 		}
-		subnetCloudResource := cluster.GetCloudResourceByRefID(ResourceType_NAT_GATEWAY, aws.ToString(natGateway.SubnetId))
+		subnetCloudResource := cluster.GetCloudResourceByRefID(ResourceType_SUBNET, aws.ToString(natGateway.SubnetId))
 		if subnetCloudResource == nil {
 			continue
 		}
@@ -989,7 +981,7 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 	// Create NAT Gateways if they don't exist for each AZ
 	natGateWayIds := make([]string, 0)
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		natgatewayResource := cluster.GetCloudResourceByTagsSingle(ResourceType_NAT_GATEWAY, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId})
+		natgatewayResource := cluster.GetCloudResourceByTagsSingle(ResourceType_NAT_GATEWAY, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.Name})
 		// value is the eip id
 		if natgatewayResource != nil && natgatewayResource.Value != "" {
 			continue
@@ -997,20 +989,20 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 		// Get private subnet for the AZ
 		privateSubnet := cluster.GetCloudResourceByTagsSingle(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{
 			ResourceTypeKeyValue_ACCESS:  ResourceTypeKeyValue_ACCESS_PRIVATE,
-			ResourceTypeKeyValue_ZONE_ID: az.RefId,
+			ResourceTypeKeyValue_ZONE_ID: az.Name,
 		})
 		if privateSubnet == nil {
-			return errors.New("no private subnet found for AZ " + az.RefId)
+			return errors.New("no private subnet found for AZ " + az.Name)
 		}
 		// Get Elastic IP
-		eip := cluster.GetCloudResourceByTagsSingle(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId})
+		eip := cluster.GetCloudResourceByTagsSingle(ResourceType_ELASTIC_IP, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.Name})
 		if eip == nil {
-			return errors.New("no eip found for AZ " + az.RefId)
+			return errors.New("no eip found for AZ " + az.Name)
 		}
 		// Create NAT Gateway
-		natGatewayName := cluster.GetNatgatewayName(az.RefId)
+		natGatewayName := cluster.GetNatgatewayName(az.Name)
 		natGatewayTags := GetTags()
-		natGatewayTags[ResourceTypeKeyValue_ZONE_ID] = az.RefId
+		natGatewayTags[ResourceTypeKeyValue_ZONE_ID] = az.Name
 		natGatewayTags[ResourceTypeKeyValue_NAME] = natGatewayName
 		natGatewayTags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
 		natGatewayOutput, err := a.ec2Client.CreateNatGateway(ctx, &ec2.CreateNatGatewayInput{
@@ -1037,12 +1029,12 @@ func (a *AwsCloudUsecase) createNatGateways(ctx context.Context, cluster *Cluste
 		a.log.Infof("nat gateway %s createing...", natGatewayName)
 	}
 	if len(natGateWayIds) != 0 {
-		a.log.Info("waiting for NAT Gateway availability")
 		waiter := ec2.NewNatGatewayAvailableWaiter(a.ec2Client)
 		err := waiter.Wait(ctx, &ec2.DescribeNatGatewaysInput{NatGatewayIds: natGateWayIds}, time.Duration(len(natGateWayIds))*TimeoutPerInstance)
 		if err != nil {
-			return fmt.Errorf("failed to wait for NAT Gateway availability: %w", err)
+			return errors.Wrap(err, "failed to wait for NAT Gateway availability")
 		}
+		a.log.Info("nat gateway created")
 	}
 	return nil
 }
@@ -1059,6 +1051,8 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		describeRouteTablesInput := &ec2.DescribeRouteTablesInput{
 			Filters: []ec2Types.Filter{
 				{Name: aws.String("vpc-id"), Values: []string{vpc.RefId}},
+				{Name: aws.String("association.main"), Values: []string{"false"}},
+				{Name: aws.String("route.state"), Values: []string{"active"}},
 			},
 			MaxResults: aws.Int32(100),
 		}
@@ -1092,14 +1086,14 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 
 	// Create private route tables (one per AZ)
 	for _, az := range cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES) {
-		if cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.RefId}) != nil {
+		if cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_ZONE_ID: az.Name}) != nil {
 			continue
 		}
-		routeTableName := cluster.GetRouteTableName(az.RefId)
+		routeTableName := cluster.GetRouteTableName(az.Name)
 		tags := GetTags()
 		tags[ResourceTypeKeyValue_NAME] = routeTableName
 		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PRIVATE
-		tags[ResourceTypeKeyValue_ZONE_ID] = az.RefId
+		tags[ResourceTypeKeyValue_ZONE_ID] = az.Name
 		// Create private route table
 		routeTable, err := a.ec2Client.CreateRouteTable(ctx, &ec2.CreateRouteTableInput{
 			VpcId: aws.String(vpc.RefId),
@@ -1119,7 +1113,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 			Tags:  cluster.EncodeTags(tags),
 			Type:  ResourceType_ROUTE_TABLE,
 		})
-		a.log.Infof("private route table %s createing for AZ %s", routeTableName, az.RefId)
+		a.log.Infof("private route table %s createing for AZ %s", routeTableName, az.Name)
 	}
 
 	routeTables := cluster.GetCloudResourceByTags(ResourceType_ROUTE_TABLE, map[ResourceTypeKeyValue]any{
@@ -1194,7 +1188,7 @@ func (a *AwsCloudUsecase) ManageSecurityGroup(ctx context.Context, cluster *Clus
 			{Name: aws.String("vpc-id"), Values: []string{vpc.RefId}},
 			{Name: aws.String("group-name"), Values: []string{sgName}},
 		},
-		MaxResults: aws.Int32(1),
+		MaxResults: aws.Int32(100),
 	})
 	if err != nil {
 		return errors.Wrap(err, "failed to describe security groups")
@@ -1264,6 +1258,9 @@ func (a *AwsCloudUsecase) ManageSecurityGroup(ctx context.Context, cluster *Clus
 	// clear not exits rules
 	exitsRules := make([]string, 0)
 	for _, sgRule := range sgRuleRes.SecurityGroupRules {
+		if aws.ToBool(sgRule.IsEgress) {
+			continue
+		}
 		exits := false
 		for _, clusterSgRule := range cluster.IngressControllerRules {
 			clusterSgRuelVals := strings.Join([]string{
@@ -1341,14 +1338,14 @@ func (a *AwsCloudUsecase) ManageSLB(ctx context.Context, cluster *Cluster) error
 		return errors.Wrap(err, "failed to describe load balancers")
 	}
 	zones := cluster.GetCloudResource(ResourceType_AVAILABILITY_ZONES)
-	zondIds := make([]string, 0)
+	zoneNames := make([]string, 0)
 	for _, v := range zones {
-		zondIds = append(zondIds, v.RefId)
+		zoneNames = append(zoneNames, v.Name)
 	}
 	for _, lb := range loadBalancerRes.LoadBalancers {
 		subnetOk := false
 		for _, zone := range lb.AvailabilityZones {
-			if utils.InArray(aws.ToString(zone.ZoneName), zondIds) {
+			if utils.InArray(aws.ToString(zone.ZoneName), zoneNames) {
 				subnetOk = true
 				break
 			}
@@ -1512,7 +1509,6 @@ var NodeArchToAwsIMagecloudType = map[NodeArchType]string{
 
 func (a *AwsCloudUsecase) FindImage(ctx context.Context, arch NodeArchType) (ec2Types.Image, error) {
 	image := ec2Types.Image{}
-
 	images, err := a.ec2Client.DescribeImages(ctx, &ec2.DescribeImagesInput{
 		Owners: []string{"amazon"},
 		Filters: []ec2Types.Filter{

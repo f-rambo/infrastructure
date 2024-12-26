@@ -137,7 +137,7 @@ func (c *ClusterInterface) CreateCloudBasicResource(cluster *biz.Cluster, stream
 		if err != nil {
 			return err
 		}
-		err = c.aliUc.ImportKeyPair(stream.Context(), cluster)
+		err = c.awsUc.ImportKeyPair(stream.Context(), cluster)
 		if err != nil {
 			return err
 		}
