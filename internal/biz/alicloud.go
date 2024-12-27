@@ -413,25 +413,8 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 
 	// Create instances
 	for _, nodeGroup := range cluster.NodeGroups {
-		needCreateNode := false
-		for _, node := range cluster.Nodes {
-			if node.NodeGroupId == nodeGroup.Id && node.Status == NodeStatus_NODE_CREATING {
-				needCreateNode = true
-				break
-			}
-		}
-		if !needCreateNode {
-			continue
-		}
-		createInstanceReq := &ecs20140526.CreateInstanceRequest{
-			InstanceChargeType: tea.String("PostPaid"),
-			RegionId:           tea.String(cluster.Region),
-			KeyPairName:        tea.String(keyPair.Name),
-			SecurityGroupId:    tea.String(sg.RefId),
-		}
-
 		for index, node := range cluster.Nodes {
-			if node.Status != NodeStatus_NODE_CREATING || node.NodeGroupId != nodeGroup.Id {
+			if node.Status != NodeStatus_NODE_CREATING || node.NodeGroupId != nodeGroup.Id || node.InstanceId != "" {
 				continue
 			}
 			privateSubnet := cluster.DistributeNodePrivateSubnets(index)
@@ -461,15 +444,19 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 				node.ErrorInfo = NodeError_INSUFFICIENT_INVENTORY
 				continue
 			}
-			// build create instance request
-			createInstanceReq.ImageId = tea.String(node.ImageId)
-			createInstanceReq.InstanceType = tea.String(node.InstanceType)
-			createInstanceReq.VSwitchId = tea.String(privateSubnet.RefId)
-			createInstanceReq.SystemDisk = &ecs20140526.CreateInstanceRequestSystemDisk{
-				Category: tea.String("cloud_essd"),
-				Size:     tea.Int32(node.SystemDiskSize),
-			}
-			createInstanceRes, err := a.ecsClient.CreateInstance(createInstanceReq)
+			createInstanceRes, err := a.ecsClient.CreateInstance(&ecs20140526.CreateInstanceRequest{
+				InstanceChargeType: tea.String("PostPaid"),
+				RegionId:           tea.String(cluster.Region),
+				KeyPairName:        tea.String(keyPair.Name),
+				SecurityGroupId:    tea.String(sg.RefId),
+				ImageId:            tea.String(node.ImageId),
+				InstanceType:       tea.String(node.InstanceType),
+				VSwitchId:          tea.String(privateSubnet.RefId),
+				SystemDisk: &ecs20140526.CreateInstanceRequestSystemDisk{
+					Category: tea.String("cloud_essd"),
+					Size:     tea.Int32(node.SystemDiskSize),
+				},
+			})
 			if err != nil {
 				node.ErrorInfo = NodeError_CREATE_FAILURE
 				return errors.Wrap(err, "failed to create instance")
@@ -1639,6 +1626,7 @@ func (a *AliCloudUsecase) ManageSLB(_ context.Context, cluster *Cluster) error {
 	}
 	for _, lb := range loadBalancers.Body.LoadBalancers.LoadBalancer {
 		if cluster.GetCloudResourceByRefID(ResourceType_LOAD_BALANCER, tea.StringValue(lb.LoadBalancerId)) != nil {
+			a.log.Infof("slb %s already exists", tea.StringValue(lb.LoadBalancerId))
 			continue
 		}
 		cluster.AddCloudResource(&CloudResource{

@@ -384,8 +384,12 @@ func (c *Cluster) GetRouteTableName(zoneId string) string {
 	return fmt.Sprintf("%s-%s-route-table", c.Name, zoneId)
 }
 
+func (c *Cluster) GetPublicRouteTableName() string {
+	return fmt.Sprintf("%s-public-route-table", c.Name)
+}
+
 func (c *Cluster) GetLoadBalancerName() string {
-	return fmt.Sprintf("%s-slb", c.Name)
+	return strings.ReplaceAll(fmt.Sprintf("%s-slb", c.Name), "_", "-")
 }
 
 type ClusterUsecase struct {
