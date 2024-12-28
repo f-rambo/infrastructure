@@ -118,140 +118,6 @@ func (a *AwsCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 }
 
 func (a *AwsCloudUsecase) OpenSSh(ctx context.Context, cluster *Cluster) error {
-	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
-	if vpc == nil {
-		return errors.New("vpc not found")
-	}
-	internateGateway := cluster.GetSingleCloudResource(ResourceType_INTERNET_GATEWAY)
-	if internateGateway == nil {
-		return errors.New("internate gateway not found")
-	}
-	instanceId := ""
-	for _, node := range cluster.Nodes {
-		if node.Role == NodeRole_MASTER {
-			instanceId = node.InstanceId
-			break
-		}
-	}
-	if instanceId == "" {
-		return errors.New("instance id not found")
-	}
-	subnetId := ""
-	instanceRes, err := a.ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{instanceId}})
-	if err != nil {
-		return err
-	}
-	if instanceRes == nil || len(instanceRes.Reservations) == 0 || len(instanceRes.Reservations[0].Instances) == 0 {
-		return errors.New("instance not found")
-	}
-	for _, v := range instanceRes.Reservations {
-		for _, instance := range v.Instances {
-			subnetId = aws.ToString(instance.SubnetId)
-			break
-		}
-	}
-	if subnetId == "" {
-		return errors.New("subnet id not found")
-	}
-	// create public route
-	publicRouteTableName := cluster.GetPublicRouteTableName()
-	routeTableRes, err := a.ec2Client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
-		Filters: []ec2Types.Filter{
-			{Name: aws.String("vpc-id"), Values: []string{vpc.RefId}},
-			{Name: aws.String("association.main"), Values: []string{"false"}},
-			{Name: aws.String("route.state"), Values: []string{"active"}},
-			{Name: aws.String("tag:Name"), Values: []string{publicRouteTableName}},
-		},
-		MaxResults: aws.Int32(100),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to describe route tables")
-	}
-	routeTableResource := cluster.GetCloudResourceByName(ResourceType_ROUTE_TABLE, publicRouteTableName)
-	if routeTableResource != nil && len(routeTableRes.RouteTables) == 0 {
-		cluster.DeleteCloudResourceByID(ResourceType_ROUTE_TABLE, routeTableResource.Id)
-	}
-	if len(routeTableRes.RouteTables) == 0 {
-		createRouteTableRes, err := a.ec2Client.CreateRouteTable(ctx, &ec2.CreateRouteTableInput{
-			VpcId: aws.String(vpc.RefId),
-			TagSpecifications: []ec2Types.TagSpecification{
-				{
-					ResourceType: ec2Types.ResourceTypeRouteTable,
-					Tags: []ec2Types.Tag{
-						{
-							Key:   aws.String("Name"),
-							Value: aws.String(publicRouteTableName),
-						},
-					},
-				},
-			},
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to create route table")
-		}
-		time.Sleep(time.Second * TimeOutSecond)
-		tags := GetTags()
-		tags[ResourceTypeKeyValue_NAME] = publicRouteTableName
-		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
-		cluster.AddCloudResource(&CloudResource{
-			Name:  publicRouteTableName,
-			RefId: aws.ToString(createRouteTableRes.RouteTable.RouteTableId),
-			Tags:  cluster.EncodeTags(tags),
-			Type:  ResourceType_ROUTE_TABLE,
-		})
-	}
-	if len(routeTableRes.RouteTables) != 0 && routeTableResource == nil {
-		tags := GetTags()
-		tags[ResourceTypeKeyValue_NAME] = publicRouteTableName
-		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
-		cluster.AddCloudResource(&CloudResource{
-			Name:  publicRouteTableName,
-			RefId: aws.ToString(routeTableRes.RouteTables[0].RouteTableId),
-			Tags:  cluster.EncodeTags(tags),
-			Type:  ResourceType_ROUTE_TABLE,
-		})
-	}
-	// bind master node subnet
-	routeTableResource = cluster.GetCloudResourceByName(ResourceType_ROUTE_TABLE, publicRouteTableName)
-	subnetExits := false
-	internateGatewayExits := false
-	for _, v := range routeTableRes.RouteTables {
-		for _, vv := range v.Associations {
-			if subnetId == aws.ToString(vv.SubnetId) {
-				subnetExits = true
-				break
-			}
-		}
-		for _, vv := range v.Routes {
-			if aws.ToString(vv.GatewayId) == internateGateway.RefId {
-				internateGatewayExits = true
-				break
-			}
-		}
-	}
-	if !subnetExits {
-		_, err := a.ec2Client.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
-			RouteTableId: aws.String(routeTableResource.RefId),
-			SubnetId:     aws.String(subnetId),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to associate private subnet with route table in AZ ")
-		}
-		time.Sleep(time.Second * TimeOutSecond)
-	}
-	// bind internate gateway
-	if !internateGatewayExits {
-		_, err := a.ec2Client.CreateRoute(ctx, &ec2.CreateRouteInput{
-			RouteTableId:         aws.String(routeTableResource.RefId),
-			DestinationCidrBlock: aws.String("0.0.0.0/0"),
-			GatewayId:            aws.String(internateGateway.RefId),
-		})
-		if err != nil {
-			return errors.Wrap(err, "failed to add route to NAT Gateway for AZ")
-		}
-		time.Sleep(time.Second * TimeOutSecond)
-	}
-	// use 22 port in the slb
 	for _, rule := range cluster.IngressControllerRules {
 		if rule.StartPort == 22 && rule.EndPort == 22 {
 			rule.Access = IngressControllerRuleAccess_PUBLIC
@@ -262,47 +128,6 @@ func (a *AwsCloudUsecase) OpenSSh(ctx context.Context, cluster *Cluster) error {
 }
 
 func (a *AwsCloudUsecase) CloseSSh(ctx context.Context, cluster *Cluster) error {
-	vpc := cluster.GetSingleCloudResource(ResourceType_VPC)
-	if vpc == nil {
-		return errors.New("vpc not found")
-	}
-	routeTableRes, err := a.ec2Client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
-		Filters: []ec2Types.Filter{
-			{Name: aws.String("vpc-id"), Values: []string{vpc.RefId}},
-			{Name: aws.String("association.main"), Values: []string{"false"}},
-			{Name: aws.String("route.state"), Values: []string{"active"}},
-			{Name: aws.String("tag:Name"), Values: []string{cluster.GetPublicRouteTableName()}},
-		},
-		MaxResults: aws.Int32(100),
-	})
-	if err != nil {
-		return errors.Wrap(err, "failed to describe route tables")
-	}
-	for _, routeTable := range routeTableRes.RouteTables {
-		for _, v := range routeTable.Associations {
-			_, err = a.ec2Client.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{AssociationId: v.RouteTableAssociationId})
-			if err != nil {
-				return errors.Wrap(err, "failed to disassociate route table")
-			}
-			time.Sleep(time.Second)
-		}
-		for _, v := range routeTable.Routes {
-			if aws.ToString(v.GatewayId) != "" && aws.ToString(v.DestinationCidrBlock) == "0.0.0.0/0" {
-				_, err = a.ec2Client.DeleteRoute(ctx, &ec2.DeleteRouteInput{
-					RouteTableId:         routeTable.RouteTableId,
-					DestinationCidrBlock: aws.String("0.0.0.0/0"),
-				})
-				if err != nil {
-					return errors.Wrap(err, "failed to delete route")
-				}
-			}
-			time.Sleep(time.Second)
-		}
-		_, err = a.ec2Client.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{RouteTableId: routeTable.RouteTableId})
-		if err != nil {
-			return errors.Wrap(err, "failed to delete route table")
-		}
-	}
 	for _, rule := range cluster.IngressControllerRules {
 		if rule.StartPort == 22 && rule.EndPort == 22 {
 			rule.Access = IngressControllerRuleAccess_PRIVATE
@@ -568,7 +393,7 @@ func (a *AwsCloudUsecase) DeleteNetwork(ctx context.Context, cluster *Cluster) e
 				time.Sleep(time.Second)
 			}
 			for _, v := range routeTable.Routes {
-				if aws.ToString(v.NatGatewayId) != "" && aws.ToString(v.DestinationCidrBlock) == "0.0.0.0/0" {
+				if (aws.ToString(v.NatGatewayId) != "" || aws.ToString(v.GatewayId) != "") && aws.ToString(v.DestinationCidrBlock) == "0.0.0.0/0" {
 					_, err = a.ec2Client.DeleteRoute(ctx, &ec2.DeleteRouteInput{
 						RouteTableId:         routeTable.RouteTableId,
 						DestinationCidrBlock: aws.String("0.0.0.0/0"),
@@ -1462,6 +1287,104 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 			return errors.Wrap(err, "failed to add route to NAT Gateway for AZ")
 		}
 		routeTable.AssociatedId = natGateway.RefId
+		time.Sleep(time.Second * TimeOutSecond)
+	}
+
+	// create public route table
+	publicRouteTableName := cluster.GetPublicRouteTableName()
+	publicRouteTableRes, err := a.ec2Client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
+		Filters: []ec2Types.Filter{
+			{Name: aws.String("vpc-id"), Values: []string{vpc.RefId}},
+			{Name: aws.String("association.main"), Values: []string{"false"}},
+			{Name: aws.String("route.state"), Values: []string{"active"}},
+			{Name: aws.String("tag:Name"), Values: []string{publicRouteTableName}},
+		},
+		MaxResults: aws.Int32(100),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to describe route tables")
+	}
+	routeTableResource := cluster.GetCloudResourceByName(ResourceType_ROUTE_TABLE, publicRouteTableName)
+	if routeTableResource != nil && len(publicRouteTableRes.RouteTables) == 0 {
+		cluster.DeleteCloudResourceByID(ResourceType_ROUTE_TABLE, routeTableResource.Id)
+	}
+	if len(publicRouteTableRes.RouteTables) == 0 {
+		createRouteTableRes, err := a.ec2Client.CreateRouteTable(ctx, &ec2.CreateRouteTableInput{
+			VpcId: aws.String(vpc.RefId),
+			TagSpecifications: []ec2Types.TagSpecification{
+				{
+					ResourceType: ec2Types.ResourceTypeRouteTable,
+					Tags: []ec2Types.Tag{
+						{
+							Key:   aws.String("Name"),
+							Value: aws.String(cluster.GetPublicRouteTableName()),
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to create route table")
+		}
+		time.Sleep(time.Second * TimeOutSecond)
+		tags := GetTags()
+		tags[ResourceTypeKeyValue_NAME] = cluster.GetPublicRouteTableName()
+		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
+		cluster.AddCloudResource(&CloudResource{
+			Name:  cluster.GetPublicRouteTableName(),
+			RefId: aws.ToString(createRouteTableRes.RouteTable.RouteTableId),
+			Tags:  cluster.EncodeTags(tags),
+			Type:  ResourceType_ROUTE_TABLE,
+		})
+	}
+	if len(publicRouteTableRes.RouteTables) != 0 && routeTableResource == nil {
+		tags := GetTags()
+		tags[ResourceTypeKeyValue_NAME] = publicRouteTableName
+		tags[ResourceTypeKeyValue_ACCESS] = ResourceTypeKeyValue_ACCESS_PUBLIC
+		cluster.AddCloudResource(&CloudResource{
+			Name:  publicRouteTableName,
+			RefId: aws.ToString(publicRouteTableRes.RouteTables[0].RouteTableId),
+			Tags:  cluster.EncodeTags(tags),
+			Type:  ResourceType_ROUTE_TABLE,
+		})
+	}
+	subnetCloudResource := cluster.GetCloudResource(ResourceType_SUBNET)
+	internetgateway := cluster.GetSingleCloudResource(ResourceType_INTERNET_GATEWAY)
+	routeTableResource = cluster.GetCloudResourceByName(ResourceType_ROUTE_TABLE, publicRouteTableName)
+	exitsSubnetIds := make([]string, 0)
+	exisInternetgateway := false
+	for _, routertable := range publicRouteTableRes.RouteTables {
+		for _, v := range routertable.Associations {
+			exitsSubnetIds = append(exitsSubnetIds, aws.ToString(v.SubnetId))
+		}
+		for _, v := range routertable.Routes {
+			if aws.ToString(v.GatewayId) == internetgateway.RefId {
+				exisInternetgateway = true
+			}
+		}
+	}
+	for _, v := range subnetCloudResource {
+		if utils.InArray(v.RefId, exitsSubnetIds) {
+			continue
+		}
+		_, err = a.ec2Client.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
+			RouteTableId: aws.String(routeTableResource.RefId),
+			SubnetId:     aws.String(v.RefId),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to associate subnet with route table in AZ")
+		}
+		time.Sleep(time.Second)
+	}
+	if !exisInternetgateway {
+		_, err := a.ec2Client.CreateRoute(ctx, &ec2.CreateRouteInput{
+			RouteTableId:         aws.String(routeTableResource.RefId),
+			DestinationCidrBlock: aws.String("0.0.0.0/0"),
+			GatewayId:            aws.String(internetgateway.RefId),
+		})
+		if err != nil {
+			return errors.Wrap(err, "failed to add route to NAT Gateway for AZ")
+		}
 		time.Sleep(time.Second * TimeOutSecond)
 	}
 	return nil
