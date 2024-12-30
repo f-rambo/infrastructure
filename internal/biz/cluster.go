@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/google/uuid"
@@ -393,11 +394,12 @@ func (c *Cluster) GetLoadBalancerName() string {
 }
 
 type ClusterUsecase struct {
-	log *log.Helper
+	log  *log.Helper
+	conf *conf.Bootstrap
 }
 
-func NewClusterUsecase(logger log.Logger) *ClusterUsecase {
-	return &ClusterUsecase{log: log.NewHelper(logger)}
+func NewClusterUsecase(conf *conf.Bootstrap, logger log.Logger) *ClusterUsecase {
+	return &ClusterUsecase{conf: conf, log: log.NewHelper(logger)}
 }
 
 var ARCH_MAP = map[string]string{
@@ -423,9 +425,10 @@ var (
 	MasterNodeJoinConfiguration string = "masterjoin.yaml"
 )
 
-func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Cluster) error {
+func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster) error {
 	var bostionHost *Node
 	var bostionHostIp string
+	var bostionHostPort string = "22"
 	if !cluster.Type.IsCloud() {
 		for _, node := range cluster.Nodes {
 			if node.Role == NodeRole_MASTER {
@@ -434,7 +437,8 @@ func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Clus
 				break
 			}
 		}
-	} else {
+	}
+	if cluster.Type.IsCloud() {
 		slb := cluster.GetSingleCloudResource(ResourceType_LOAD_BALANCER)
 		for _, node := range cluster.Nodes {
 			if node.InstanceId == "" || node.Role != NodeRole_MASTER {
@@ -448,22 +452,10 @@ func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Clus
 	if bostionHost == nil || bostionHostIp == "" {
 		return errors.New("bostion host is not found")
 	}
-	remoteBash := utils.NewRemoteBash(utils.Server{
-		Name:       bostionHost.Name,
-		Host:       bostionHostIp,
-		User:       bostionHost.User,
-		Port:       22,
-		PrivateKey: cluster.PrivateKey,
-	}, c.log)
-	stdout, err := remoteBash.Run("uname -m")
+	serverStoreName, err := utils.GetServerStorePathByNames()
 	if err != nil {
 		return err
 	}
-	arch := strings.TrimSpace(stdout)
-	if _, ok := ARCH_MAP[arch]; !ok {
-		return errors.New("bostion host arch is not supported")
-	}
-	// cluster.BostionHost.Arch = ARCH_MAP[arch]
 	shellPath, err := utils.GetServerStorePathByNames(utils.ShellPackage)
 	if err != nil {
 		return err
@@ -472,25 +464,25 @@ func (c *ClusterUsecase) MigrateToBostionHost(ctx context.Context, cluster *Clus
 	if err != nil {
 		return err
 	}
-	syncShellPath := utils.MergePath(shellPath, SyncShell)
-	homePath, err := utils.GetServerStorePathByNames()
+	err = utils.DownloadFile(c.conf.Resource.GetUrl(), resourcePath)
 	if err != nil {
 		return err
 	}
-	err = utils.NewBash(c.log).RunCommandWithLogging("sudo bash", syncShellPath,
-		bostionHostIp,
-		"22",
-		bostionHost.User,
-		cluster.PrivateKey,
-		homePath,
-		shellPath,
-		resourcePath,
-	)
+	tarFileName, err := utils.GetFileNameFromURL(c.conf.Resource.GetUrl())
 	if err != nil {
 		return err
 	}
-	serviceShellPath := utils.MergePath(shellPath, ServiceShell)
-	err = remoteBash.RunWithLogging("bash", serviceShellPath, BostionHostEnv)
+	tarFileNamePath := fmt.Sprintf("%s/%s", resourcePath, tarFileName)
+	if !utils.IsFileExist(tarFileNamePath) {
+		return errors.New("resource file is not found")
+	}
+	bashObj := utils.NewBash(c.log)
+	err = bashObj.RunCommandWithLogging("tar", "-zxvf", tarFileNamePath, "-C", serverStoreName)
+	if err != nil {
+		return err
+	}
+	err = bashObj.RunCommandWithLogging("sudo bash", utils.MergePath(shellPath, SyncShell),
+		c.conf.Server.GetName(), bostionHostIp, bostionHostPort, bostionHost.User, cluster.PrivateKey)
 	if err != nil {
 		return err
 	}

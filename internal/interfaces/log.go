@@ -21,10 +21,10 @@ type LogInterface struct {
 	c   *conf.Server
 }
 
-func NewLogInterface(logger log.Logger, c *conf.Server) *LogInterface {
+func NewLogInterface(logger log.Logger, c *conf.Bootstrap) *LogInterface {
 	return &LogInterface{
 		log: log.NewHelper(logger),
-		c:   c,
+		c:   c.Server,
 	}
 }
 

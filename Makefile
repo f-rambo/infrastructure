@@ -5,6 +5,7 @@ AUTHOR=frambos
 IMG=$(AUTHOR)/$(SERVER_NAME):$(VERSION)
 BUILDER_NAME=$(SERVER_NAME)-multi-platform-buildx
 PLATFORMS = linux/amd64 linux/arm64
+SERVER_HOME=$(HOME)/.$(SERVER_NAME)
 
 INTERNAL_PROTO_FILES=$(shell find internal -name *.proto)
 API_PROTO_FILES=$(shell find api -name *.proto)
@@ -79,6 +80,28 @@ multi-platform-build:
 		cd ./built && sha256sum $$container_name.tar.gz > $$container_name.tar.gz.sha256sum && cd - ; \
 		sleep 5; \
 	done
+
+.PHONY: download-resources
+download-resources:
+	@mkdir -p ./resource/
+	@for platform in $(PLATFORMS); do \
+		image_name=$$platform/resource:$(VERSION); \
+		echo "Building image $$image_name"; \
+		docker build --platform=$$platform -f Dockerfile.download_resource -t $$image_name --load . ; \
+		platform_formated=$$(echo $$platform | tr '[:upper:]' '[:lower:]' | tr '/' '-'); \
+		container_name=$$platform_formated-dind-container; \
+		arch=$$(echo $$platform | cut -d '/' -f2); \
+		mkdir -p $(SERVER_HOME)/resource/$$arch; \
+		docker run --privileged --platform=$$platform --name $$container_name -d --rm -v $(SERVER_HOME)/resource/$$arch:/resource -v $(SERVER_HOME)/shell/:/shell $$image_name; \
+		sleep 5; \
+		docker exec -it $$container_name /bin/bash /shell/download.sh /resource; \
+		docker stop $$container_name; \
+		sleep 5; \
+	done
+
+.PHONY: download-test
+download-test:
+	echo "$(SERVER_HOME)"
 
 .PHONY: all
 all:

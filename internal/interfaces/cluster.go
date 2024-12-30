@@ -23,13 +23,13 @@ type ClusterInterface struct {
 	c         *conf.Server
 }
 
-func NewClusterInterface(awsUc *biz.AwsCloudUsecase, aliUc *biz.AliCloudUsecase, clusterUc *biz.ClusterUsecase, logger log.Logger, c *conf.Server) *ClusterInterface {
+func NewClusterInterface(awsUc *biz.AwsCloudUsecase, aliUc *biz.AliCloudUsecase, clusterUc *biz.ClusterUsecase, c *conf.Bootstrap, logger log.Logger) *ClusterInterface {
 	return &ClusterInterface{
 		awsUc:     awsUc,
 		aliUc:     aliUc,
 		clusterUc: clusterUc,
 		log:       log.NewHelper(logger),
-		c:         c,
+		c:         c.Server,
 	}
 }
 
@@ -239,45 +239,6 @@ func (c *ClusterInterface) ManageNodeResource(cluster *biz.Cluster, stream clust
 	return nil
 }
 
-func (c *ClusterInterface) MigrateToBostionHost(cluster *biz.Cluster, stream clusterApi.ClusterInterface_MigrateToBostionHostServer) error {
-	defer func() {
-		stream.Send(cluster)
-		if cluster.Type == biz.ClusterType_ALICLOUD {
-			c.aliUc.Connections(stream.Context(), cluster)
-			c.aliUc.CloseSSh(stream.Context(), cluster)
-		}
-		if cluster.Type == biz.ClusterType_AWS {
-			c.awsUc.Connections(stream.Context(), cluster)
-			c.awsUc.CloseSSh(stream.Context(), cluster)
-		}
-	}()
-	if cluster.Type == biz.ClusterType_ALICLOUD {
-		err := c.aliUc.Connections(stream.Context(), cluster)
-		if err != nil {
-			return err
-		}
-		err = c.aliUc.OpenSSh(stream.Context(), cluster)
-		if err != nil {
-			return err
-		}
-	}
-	if cluster.Type == biz.ClusterType_AWS {
-		err := c.awsUc.Connections(stream.Context(), cluster)
-		if err != nil {
-			return err
-		}
-		err = c.awsUc.OpenSSh(stream.Context(), cluster)
-		if err != nil {
-			return err
-		}
-	}
-	err := c.clusterUc.MigrateToBostionHost(stream.Context(), cluster)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clusterApi.ClusterInterface_GetNodesSystemInfoServer) error {
 	defer stream.Send(cluster)
 	if !cluster.Type.IsCloud() {
@@ -392,7 +353,19 @@ func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clust
 
 func (c *ClusterInterface) Install(cluster *biz.Cluster, stream clusterApi.ClusterInterface_InstallServer) error {
 	defer stream.Send(cluster)
-	err := c.clusterUc.Install(stream.Context(), cluster)
+	err := c.openSsh(stream.Context(), cluster)
+	if err != nil {
+		return err
+	}
+	err = c.clusterUc.MigrateResources(stream.Context(), cluster)
+	if err != nil {
+		return err
+	}
+	err = c.clusterUc.Install(stream.Context(), cluster)
+	if err != nil {
+		return err
+	}
+	err = c.closeSsh(stream.Context(), cluster)
 	if err != nil {
 		return err
 	}
@@ -413,6 +386,54 @@ func (c *ClusterInterface) HandlerNodes(cluster *biz.Cluster, stream clusterApi.
 	err := c.clusterUc.HandlerNodes(stream.Context(), cluster)
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+func (c *ClusterInterface) openSsh(ctx context.Context, cluster *biz.Cluster) error {
+	if cluster.Type == biz.ClusterType_ALICLOUD {
+		err := c.aliUc.Connections(ctx, cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.OpenSSh(ctx, cluster)
+		if err != nil {
+			return err
+		}
+	}
+	if cluster.Type == biz.ClusterType_AWS {
+		err := c.awsUc.Connections(ctx, cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.OpenSSh(ctx, cluster)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *ClusterInterface) closeSsh(ctx context.Context, cluster *biz.Cluster) error {
+	if cluster.Type == biz.ClusterType_ALICLOUD {
+		err := c.aliUc.Connections(ctx, cluster)
+		if err != nil {
+			return err
+		}
+		err = c.aliUc.CloseSSh(ctx, cluster)
+		if err != nil {
+			return err
+		}
+	}
+	if cluster.Type == biz.ClusterType_AWS {
+		err := c.awsUc.Connections(ctx, cluster)
+		if err != nil {
+			return err
+		}
+		err = c.awsUc.CloseSSh(ctx, cluster)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

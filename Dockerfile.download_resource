@@ -1,0 +1,7 @@
+FROM docker:dind
+
+RUN apk add --no-cache bash curl coreutils
+
+VOLUME ["/shell", "/resource"]
+
+CMD ["dockerd"]

@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -127,4 +130,37 @@ func MergePath(paths ...string) string {
 		pathArr = append(pathArr, strings.Split(path, "/")...)
 	}
 	return strings.Join(pathArr, "/")
+}
+
+func DownloadFile(url string, filepath string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func GetFileNameFromURL(rawURL string) (string, error) {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+
+	path := parsedURL.Path
+
+	fileName := filepath.Base(path)
+	return fileName, nil
 }

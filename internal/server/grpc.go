@@ -14,22 +14,22 @@ import (
 )
 
 // NewGRPCServer new a gRPC server.
-func NewGRPCServer(c *conf.Server, logInterface *interfaces.LogInterface, clusterInterface *interfaces.ClusterInterface, logger log.Logger) *grpc.Server {
+func NewGRPCServer(c *conf.Bootstrap, logInterface *interfaces.LogInterface, clusterInterface *interfaces.ClusterInterface, logger log.Logger) *grpc.Server {
 	var opts = []grpc.ServerOption{
 		grpc.Middleware(
 			recovery.Recovery(),
 			metadata.Server(),
 		),
 	}
-	netWork := c.Grpc.GetNetwork()
+	netWork := c.Server.Grpc.GetNetwork()
 	if netWork != "" {
 		opts = append(opts, grpc.Network(netWork))
 	}
-	addr := c.Grpc.GetAddr()
+	addr := c.Server.Grpc.GetAddr()
 	if addr != "" {
 		opts = append(opts, grpc.Address(addr))
 	}
-	timeoutsecond := c.Grpc.GetTimeout()
+	timeoutsecond := c.Server.Grpc.GetTimeout()
 	if timeoutsecond != 0 {
 		opts = append(opts, grpc.Timeout(time.Duration(timeoutsecond)*time.Second))
 	}

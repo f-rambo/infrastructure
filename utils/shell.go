@@ -118,42 +118,6 @@ extract_tar() {
     }
 }
 
-function download_cloud_copilot() {
-    log "download cloud_copilot ${SERVICE_VERSION} ${ARCH}"
-    cloud_copilot_path="${RESOURCE}/cloud_copilot/${SERVICE_VERSION}"
-    create_directory "$cloud_copilot_path"
-    cloud_copilot_tarfile="linux-${ARCH}-cloud_copilot-${SERVICE_VERSION}.tar.gz"
-    if ! download_file "https://github.com/f-rambo/cloud-copilot/releases/download/${SERVICE_VERSION}/${cloud_copilot_tarfile}" "$cloud_copilot_tarfile" "${cloud_copilot_tarfile}.sha256sum"; then
-        log "Failed to download file"
-        return 1
-    fi
-    if ! verify_checksum "$cloud_copilot_tarfile" "${cloud_copilot_tarfile}.sha256sum"; then
-        log "Checksum verification failed"
-        rm -f "$cloud_copilot_tarfile" "${cloud_copilot_tarfile}.sha256sum"
-        return 1
-    fi
-    extract_tar "$cloud_copilot_tarfile" "$cloud_copilot_path"
-    rm -f "$cloud_copilot_tarfile" "${cloud_copilot_tarfile}.sha256sum"
-}
-
-function download_ship() {
-    log "download ship ${SERVICE_VERSION} ${ARCH}"
-    ship_path="${RESOURCE}/ship/${SERVICE_VERSION}"
-    create_directory "$ship_path"
-    ship_tarfile="linux-${ARCH}-ship-${SERVICE_VERSION}.tar.gz"
-    if ! download_file "https://github.com/f-rambo/ship/releases/download/${SERVICE_VERSION}/${ship_tarfile}" "$ship_tarfile" "${ship_tarfile}.sha256sum"; then
-        log "Failed to download file"
-        return 1
-    fi
-    if ! verify_checksum "$ship_tarfile" "${ship_tarfile}.sha256sum"; then
-        log "Checksum verification failed"
-        rm -f "$ship_tarfile" "${ship_tarfile}.sha256sum"
-        return 1
-    fi
-    extract_tar "$ship_tarfile" "$ship_path"
-    rm -f "$ship_tarfile" "${ship_tarfile}.sha256sum"
-}
-
 function download_containerd() {
     log "download containerd ${CONTAINERD_VERSION} ${ARCH}"
     containerd_path="${RESOURCE}/containerd/${CONTAINERD_VERSION}"
@@ -246,8 +210,6 @@ function pull_images() {
 }
 
 create_directory "$RESOURCE"
-download_cloud_copilot
-download_ship
 download_containerd
 download_kubeadm_kubelet
 pull_images
@@ -658,25 +620,29 @@ esac
 	SyncShell = `#!/bin/bash
 set -e
 
-SERVER_IP=$1
-SERVER_PORT=$2
-SERVER_USER=$3
-PRIVATE_KEY=$4
-OCEAN_DATA=${5:-"$HOME/.cloud_copilot"}
-RESOURCE=${6:-"$HOME/resource"}
-SHELL_PATH=${7:-"$HOME/shell"}
-PRIVATE_KEY_PATH="/tmp/private_key"
+SERVER_NAME=$1
+SERVER_IP=$2
+SERVER_PORT=$3
+SERVER_USER=$4
+PRIVATE_KEY=$5
+
+SERVER_FILE=.$SERVER_NAME
+
+PRIVATE_KEY_PATH="$HOME/$SERVER_FILE/tmp/private_key"
 
 echo "$PRIVATE_KEY" >$PRIVATE_KEY_PATH && chmod 600 $PRIVATE_KEY_PATH
 
-LOG_FILE="/var/log/data_sync.log"
-
 function log() {
     local message=$1
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $message" | tee -a $LOG_FILE
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $message"
 }
 
 function verify_params() {
+    if [ -z "$SERVER_NAME" ]; then
+        log "Server Name is required"
+        exit 1
+    fi
+
     if [ -z "$SERVER_IP" ]; then
         log "Server IP is required"
         exit 1
@@ -696,86 +662,30 @@ function verify_params() {
         log "Private Key is required"
         exit 1
     fi
-
-    if [ ! -f "$PRIVATE_KEY" ]; then
-        log "Private Key file does not exist"
-        exit 1
-    fi
-
-    if [ ! -d "$OCEAN_DATA" ]; then
-        log "Ocean Data directory does not exist"
-        exit 1
-    fi
-
-    if [ ! -d "$RESOURCE" ]; then
-        log "Resource directory does not exist"
-        exit 1
-    fi
 }
 
-function package_data_resource() {
-    log "Packaging data resource..."
-    mkdir /tmp/data_resource
-    if [ -d "$RESOURCE" ]; then
-        cp -r $RESOURCE/* /tmp/data_resource/
-    fi
-    if [ -d "$SHELL_PATH" ]; then
-        cp -r $SHELL_PATH/* /tmp/data_resource/
-    fi
-    if [ -d "$OCEAN_DATA" ]; then
-        cp -r $OCEAN_DATA/* /tmp/data_resource/
-    fi
-    tar -czvf /tmp/data_resource.tar.gz -C /tmp/data_resource .
-    rm -rf /tmp/data_resource
-    log "Data resource packaged successfully."
-    log "Data resource package path: /tmp/data_resource.tar.gz"
+function package() {
+    log "Packaging resource..."
+    tar -C $HOME -czvf $SERVER_NAME.tar.gz $SERVER_FILE
+    log "$SERVER_NAME packaged successfully."
 }
 
-function sync_data_resource() {
-    log "Syncing data resource..."
-    rsync -avz -e "ssh -i $PRIVATE_KEY_PATH -p $SERVER_PORT" /tmp/data_resource.tar.gz $SERVER_USER@$SERVER_IP:/tmp/data_resource.tar.gz
+function sync() {
+    log "Syncing resource..."
+    rsync -avz -e "ssh -i $PRIVATE_KEY_PATH -p $SERVER_PORT" $HOME/$SERVER_NAME.tar.gz $SERVER_USER@$SERVER_IP:/tmp/resource.tar.gz
     log "Data resource synced successfully."
 }
 
 function extract_tar() {
-    log "Extracting data resource..."
-    ssh -i $PRIVATE_KEY_PATH -p $SERVER_PORT $SERVER_USER@$SERVER_IP "tar -xzf /tmp/data_resource.tar.gz -C $HOME"
+    log "Extracting resource..."
+    ssh -i $PRIVATE_KEY_PATH -p $SERVER_PORT $SERVER_USER@$SERVER_IP "tar -xzf /tmp/resource.tar.gz -C $HOME"
     log "Data resource extracted successfully."
-    log "Data resource extract path: /tmp/data_resource"
-    rm /tmp/data_resource.tar.gz
 }
-
-function move_files() {
-    local source_dir=$1
-    local target_dir=$2
-    local target_user=$3
-
-    if [ -d "$source_dir" ]; then
-        ssh -i $PRIVATE_KEY_PATH -p $SERVER_PORT $target_user@$SERVER_IP "mkdir -p $target_dir && mv $HOME/data_resource/$(basename $source_dir) $target_dir"
-        log "$(basename $source_dir) moved successfully."
-        log "Move path: $target_dir"
-    fi
-}
-
-function mvfile() {
-    log "Moving files..."
-    move_files $RESOURCE /home/$SERVER_USER/resource $SERVER_USER
-    move_files $OCEAN_DATA /home/$SERVER_USER/.cloud_copilot $SERVER_USER
-    move_files $SHELL_PATH /home/$SERVER_USER/shell $SERVER_USER
-}
-
-function handle_error() {
-    local error_code=$?
-    log "An error occurred with code $error_code. Exiting..."
-    exit $error_code
-}
-
-trap handle_error ERR
 
 verify_params
-package_data_resource
-sync_data_resource
-mvfile
+package
+sync
+extract_tar
 
 `
 	SystemInfoShell = `#!/bin/bash

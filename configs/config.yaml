@@ -10,3 +10,5 @@ log:
   max_size: 500
   max_backups: 3
   max_age: 28
+resource:
+  url: "https://www.github.com/..."
