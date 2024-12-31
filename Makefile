@@ -81,8 +81,8 @@ multi-platform-build:
 		sleep 5; \
 	done
 
-.PHONY: download-resources
-download-resources:
+.PHONY: download-resource
+download-resource:
 	@mkdir -p ./resource/
 	@for platform in $(PLATFORMS); do \
 		image_name=$$platform/resource:$(VERSION); \
@@ -92,16 +92,16 @@ download-resources:
 		container_name=$$platform_formated-dind-container; \
 		arch=$$(echo $$platform | cut -d '/' -f2); \
 		mkdir -p $(SERVER_HOME)/resource/$$arch; \
-		docker run --privileged --platform=$$platform --name $$container_name -d --rm -v $(SERVER_HOME)/resource/$$arch:/resource -v $(SERVER_HOME)/shell/:/shell $$image_name; \
+		docker run --network host --privileged --platform=$$platform --name $$container_name -d --rm -v $(SERVER_HOME)/resource/$$arch:/resource -v $(SERVER_HOME)/shell/:/shell $$image_name; \
 		sleep 5; \
 		docker exec -it $$container_name /bin/bash /shell/download.sh /resource; \
 		docker stop $$container_name; \
 		sleep 5; \
 	done
 
-.PHONY: download-test
-download-test:
-	echo "$(SERVER_HOME)"
+.PHONY: package-resource
+package-resource:
+	tar -C $(SERVER_HOME) -czvf $(SERVER_HOME)/resource-$(VERSION).tar.gz resource;
 
 .PHONY: all
 all:

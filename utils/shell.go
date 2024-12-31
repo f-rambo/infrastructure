@@ -96,10 +96,14 @@ verify_checksum() {
         return 1
     fi
 
+    sleep 10
+
     if [[ ! -f "$checksum_file" ]]; then
         log "Checksum file not found: $checksum_file" >&2
         return 1
     fi
+
+    sleep 10
 
     if ! sha256sum -c "$checksum_file"; then
         log "SHA256 checksum verification failed for $file" >&2
