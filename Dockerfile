@@ -15,8 +15,7 @@ COPY --from=builder /app /app
 
 WORKDIR /app
 
-EXPOSE 8002
 EXPOSE 9002
 VOLUME /data/conf
 
-CMD ["./bin/infrastructure", "-conf", "./configs/"]
+CMD ["./bin/infrastructure", "-conf", "./configs/config.yaml"]

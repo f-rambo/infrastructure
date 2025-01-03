@@ -54,10 +54,7 @@ func (l *LogInterface) GetLogs(stream logApi.LogInterface_GetLogsServer) error {
 			req.TailLines = 30
 		}
 
-		logpath, err := utils.GetLogFilePath(l.c.Name)
-		if err != nil {
-			return err
-		}
+		logpath := utils.GetLogFilePath()
 		if ok := utils.IsFileExist(logpath); !ok {
 			return errors.New("log file does not exist")
 		}

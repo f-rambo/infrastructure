@@ -60,7 +60,7 @@ docker-push:
 
 .PHONY: run
 run:
-	go run ./cmd/infrastructure -conf ./configs/
+	go run ./cmd/infrastructure -conf ./configs/config.yaml
 
 .PHONY: generate
 generate:

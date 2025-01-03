@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"path/filepath"
 	"runtime"
 
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
@@ -45,6 +46,7 @@ func newApp(logger log.Logger, gs *grpc.Server) *kratos.App {
 			utils.OSKey.String():             runtime.GOOS,
 			utils.ArchKey.String():           runtime.GOARCH,
 			utils.ConfKey.String():           flagconf,
+			utils.ConfDirKey.String():        filepath.Dir(flagconf),
 		}),
 		kratos.Logger(logger),
 		kratos.Server(gs),
@@ -74,19 +76,12 @@ func main() {
 	if Name == "" || Version == "" {
 		panic("name or version is empty")
 	}
-	utils.ServerNameAsStoreDirName = Name
-	if err := utils.InitServerStore(); err != nil {
-		panic(err)
-	}
 
 	if err := utils.ShellToolsInit(); err != nil {
 		panic(err)
 	}
 
-	utilLogger, err := utils.NewLog(&bc)
-	if err != nil {
-		panic(err)
-	}
+	utilLogger := utils.NewLog(&bc)
 	defer utilLogger.Close()
 	logger := log.With(utilLogger, utils.GetLogContenteKeyvals()...)
 

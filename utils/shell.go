@@ -1,11 +1,8 @@
 package utils
 
 const (
-	Download   = "download.sh"
 	Kubernetes = "kubernetes.sh"
 	NodeInit   = "nodeinit.sh"
-	Service    = "service.sh"
-	Sync       = "sync.sh"
 	SystemInfo = "systeminfo.sh"
 )
 
@@ -621,77 +618,7 @@ case $SERVICE in
 esac
 
 `
-	SyncShell = `#!/bin/bash
-set -e
 
-SERVER_NAME=$1
-SERVER_IP=$2
-SERVER_PORT=$3
-SERVER_USER=$4
-PRIVATE_KEY=$5
-
-SERVER_FILE=.$SERVER_NAME
-
-PRIVATE_KEY_PATH="$HOME/$SERVER_FILE/tmp/private_key"
-
-echo "$PRIVATE_KEY" >$PRIVATE_KEY_PATH && chmod 600 $PRIVATE_KEY_PATH
-
-function log() {
-    local message=$1
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $message"
-}
-
-function verify_params() {
-    if [ -z "$SERVER_NAME" ]; then
-        log "Server Name is required"
-        exit 1
-    fi
-
-    if [ -z "$SERVER_IP" ]; then
-        log "Server IP is required"
-        exit 1
-    fi
-
-    if [ -z "$SERVER_PORT" ]; then
-        log "Server Port is required"
-        exit 1
-    fi
-
-    if [ -z "$SERVER_USER" ]; then
-        log "Server User is required"
-        exit 1
-    fi
-
-    if [ -z "$PRIVATE_KEY" ]; then
-        log "Private Key is required"
-        exit 1
-    fi
-}
-
-function package() {
-    log "Packaging resource..."
-    tar -C $HOME -czvf $SERVER_NAME.tar.gz $SERVER_FILE
-    log "$SERVER_NAME packaged successfully."
-}
-
-function sync() {
-    log "Syncing resource..."
-    rsync -avz -e "ssh -i $PRIVATE_KEY_PATH -p $SERVER_PORT" $HOME/$SERVER_NAME.tar.gz $SERVER_USER@$SERVER_IP:/tmp/resource.tar.gz
-    log "Data resource synced successfully."
-}
-
-function extract_tar() {
-    log "Extracting resource..."
-    ssh -i $PRIVATE_KEY_PATH -p $SERVER_PORT $SERVER_USER@$SERVER_IP "tar -xzf /tmp/resource.tar.gz -C $HOME"
-    log "Data resource extracted successfully."
-}
-
-verify_params
-package
-sync
-extract_tar
-
-`
 	SystemInfoShell = `#!/bin/bash
 
 uuid=$(dmidecode -s system-uuid)
@@ -784,21 +711,17 @@ echo "$json_output"
 )
 
 var shellMap = map[string]string{
-	Download:   DownloadShell,
 	Kubernetes: KubernetesShell,
 	NodeInit:   NodeInitShell,
-	Service:    ServiceShell,
-	Sync:       SyncShell,
 	SystemInfo: SystemInfoShell,
 }
 
+const ShellPackage string = "shell"
+
 func ShellToolsInit() error {
-	shellPackagePath, err := GetServerStorePathByNames(ShellPackage)
-	if err != nil {
-		return err
-	}
+	shellPackagePath := GetServerStoragePathByNames(ShellPackage)
 	for fileName, shell := range shellMap {
-		err = WriteFile(shellPackagePath, fileName, shell)
+		err := WriteFile(shellPackagePath, fileName, shell)
 		if err != nil {
 			return err
 		}

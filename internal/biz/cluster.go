@@ -428,7 +428,6 @@ var (
 func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster) error {
 	var bostionHost *Node
 	var bostionHostIp string
-	var bostionHostPort string = "22"
 	if !cluster.Type.IsCloud() {
 		for _, node := range cluster.Nodes {
 			if node.Role == NodeRole_MASTER {
@@ -452,37 +451,21 @@ func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster)
 	if bostionHost == nil || bostionHostIp == "" {
 		return errors.New("bostion host is not found")
 	}
-	serverStoreName, err := utils.GetServerStorePathByNames()
+	tarFile, err := utils.DownloadFile(c.conf.Resource.GetUrl())
 	if err != nil {
 		return err
 	}
-	shellPath, err := utils.GetServerStorePathByNames(utils.ShellPackage)
+	remoteTarfile := fmt.Sprintf("/tmp/%s", tarFile)
+	remoteBash := utils.NewRemoteBash(utils.Server{Name: bostionHostIp, Host: bostionHostIp, User: bostionHost.User, Port: 22, PrivateKey: cluster.PrivateKey}, c.log)
+	err = remoteBash.SftpFile(tarFile, remoteTarfile)
 	if err != nil {
 		return err
 	}
-	resourcePath, err := utils.GetServerStorePathByNames(utils.ResourcePackage)
+	userHomePath, err := remoteBash.GetUserHome()
 	if err != nil {
 		return err
 	}
-	err = utils.DownloadFile(c.conf.Resource.GetUrl(), resourcePath)
-	if err != nil {
-		return err
-	}
-	tarFileName, err := utils.GetFileNameFromURL(c.conf.Resource.GetUrl())
-	if err != nil {
-		return err
-	}
-	tarFileNamePath := fmt.Sprintf("%s/%s", resourcePath, tarFileName)
-	if !utils.IsFileExist(tarFileNamePath) {
-		return errors.New("resource file is not found")
-	}
-	bashObj := utils.NewBash(c.log)
-	err = bashObj.RunCommandWithLogging("tar", "-zxvf", tarFileNamePath, "-C", serverStoreName)
-	if err != nil {
-		return err
-	}
-	err = bashObj.RunCommandWithLogging("sudo bash", utils.MergePath(shellPath, SyncShell),
-		c.conf.Server.GetName(), bostionHostIp, bostionHostPort, bostionHost.User, cluster.PrivateKey)
+	err = remoteBash.RunWithLogging("tar", "-C", userHomePath, "-zxvf", remoteTarfile)
 	if err != nil {
 		return err
 	}
@@ -505,10 +488,7 @@ var GPUSpecMap = map[string]NodeGPUSpec{
 func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluster) error {
 	ips := cluster.DecodeNodeIps(cluster.GetNodeIps())
 	errGroup, _ := errgroup.WithContext(ctx)
-	shellPath, err := utils.GetServerStorePathByNames(utils.ShellPackage)
-	if err != nil {
-		return err
-	}
+	shellPath := utils.GetServerStoragePathByNames(utils.ShellPackage)
 	nodeInforMaps := make([]map[string]string, 0)
 	lock := new(sync.Mutex)
 	for _, ip := range ips {
@@ -534,7 +514,7 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 			return nil
 		})
 	}
-	err = errGroup.Wait()
+	err := errGroup.Wait()
 	if err != nil {
 		return err
 	}
@@ -636,19 +616,16 @@ func (c *ClusterUsecase) Install(ctx context.Context, cluster *Cluster) error {
 		utils.Server{Name: cluster.Name, Host: firstMasterNode.Ip, User: firstMasterNode.User, Port: 22, PrivateKey: cluster.PrivateKey},
 		c.log,
 	)
-	shellPath, err := utils.GetServerStorePathByNames(utils.ShellPackage)
+	shellPath := utils.GetServerStoragePathByNames(utils.ShellPackage)
+	err := remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, NodeInitShell))
 	if err != nil {
 		return err
 	}
-	err = remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, NodeInitShell))
+	err = remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, KubernetesShell), "$HOME/resource")
 	if err != nil {
 		return err
 	}
-	configPath, err := utils.GetFromContextByKey(ctx, utils.ConfKey)
-	if err != nil {
-		return err
-	}
-	clusterConfigData, err := os.ReadFile(utils.MergePath(configPath, ClusterConfiguration))
+	clusterConfigData, err := os.ReadFile(utils.MergePath(utils.GetFromContextByKey(ctx, utils.ConfDirKey), ClusterConfiguration))
 	if err != nil {
 		return err
 	}
@@ -674,7 +651,7 @@ func (c *ClusterUsecase) Install(ctx context.Context, cluster *Cluster) error {
 		return nil
 	})
 	errGroup.Go(func() error {
-		return c.restartKubelet(remoteBash)
+		return c.restartKubelet(ctx, cluster, firstMasterNode)
 	})
 	err = errGroup.Wait()
 	if err != nil {
@@ -712,75 +689,99 @@ func (c *ClusterUsecase) UnInstall(ctx context.Context, cluster *Cluster) error 
 		if node.Role != NodeRole_WORKER {
 			continue
 		}
-		remoteBash := utils.NewRemoteBash(
-			utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
-			c.log,
-		)
-		err := c.uninstallNode(remoteBash)
+		err := c.uninstallNode(ctx, cluster, node)
 		if err != nil {
 			return err
 		}
-		node.Status = NodeStatus_NODE_DELETED
 	}
 	for _, node := range cluster.Nodes {
 		if node.Role != NodeRole_WORKER {
 			continue
 		}
-		remoteBash := utils.NewRemoteBash(
-			utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
-			c.log,
-		)
-		err := c.uninstallNode(remoteBash)
+		err := c.uninstallNode(ctx, cluster, node)
 		if err != nil {
 			return err
 		}
-		node.Status = NodeStatus_NODE_DELETED
 	}
 	return nil
 }
 
 func (c *ClusterUsecase) HandlerNodes(ctx context.Context, cluster *Cluster) error {
 	for _, node := range cluster.Nodes {
-		remoteBash := utils.NewRemoteBash(
-			utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey},
-			c.log,
-		)
 		if node.Status == NodeStatus_NODE_CREATING {
-			joinShell := fmt.Sprintf("kubeadm join --token %s --discovery-token-ca-cert-hash sha256:%s --certificate-key %s",
-				cluster.Token, cluster.CertData, cluster.KeyData)
-			if node.Role == NodeRole_MASTER {
-				joinShell += " --control-plane"
-			}
-			errGroup, _ := errgroup.WithContext(ctx)
-			errGroup.Go(func() error {
-				err := remoteBash.RunWithLogging(joinShell)
-				if err != nil {
-					remoteBash.RunWithLogging("kubeadm reset --force")
-					return err
-				}
-				return nil
-			})
-			errGroup.Go(func() error {
-				return c.restartKubelet(remoteBash)
-			})
-			err := errGroup.Wait()
+			err := c.joinCluster(ctx, cluster, node)
 			if err != nil {
 				return err
 			}
-			node.Status = NodeStatus_NODE_RUNNING
 		}
 		if node.Status == NodeStatus_NODE_DELETING {
-			err := c.uninstallNode(remoteBash)
+			err := c.uninstallNode(ctx, cluster, node)
 			if err != nil {
 				return err
 			}
-			node.Status = NodeStatus_NODE_DELETED
 		}
 	}
 	return nil
 }
 
-func (c *ClusterUsecase) restartKubelet(remoteBash *utils.RemoteBash) error {
+func (c *ClusterUsecase) joinCluster(ctx context.Context, cluster *Cluster, node *Node) error {
+	remoteBash := utils.NewRemoteBash(utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey}, c.log)
+	shellPath := utils.GetServerStoragePathByNames(utils.ShellPackage)
+	err := remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, NodeInitShell))
+	if err != nil {
+		return err
+	}
+	err = remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, KubernetesShell), "$HOME/resource")
+	if err != nil {
+		return err
+	}
+	joinShell := fmt.Sprintf("kubeadm join --token %s --discovery-token-ca-cert-hash sha256:%s --certificate-key %s",
+		cluster.Token, cluster.CertData, cluster.KeyData)
+	if node.Role == NodeRole_MASTER {
+		joinShell += " --control-plane"
+	}
+	errGroup, _ := errgroup.WithContext(ctx)
+	errGroup.Go(func() error {
+		err := remoteBash.RunWithLogging(joinShell)
+		if err != nil {
+			remoteBash.RunWithLogging("kubeadm reset --force")
+			return err
+		}
+		return nil
+	})
+	errGroup.Go(func() error {
+		return c.restartKubelet(ctx, cluster, node)
+	})
+	err = errGroup.Wait()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *ClusterUsecase) uninstallNode(_ context.Context, cluster *Cluster, node *Node) error {
+	remoteBash := utils.NewRemoteBash(utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey}, c.log)
+	err := remoteBash.RunWithLogging("kubeadm reset --force")
+	if err != nil {
+		return err
+	}
+	err = remoteBash.RunWithLogging("rm -rf $HOME/.kube && rm -rf /etc/kubernetes && rm -rf /etc/cni")
+	if err != nil {
+		return err
+	}
+	err = remoteBash.RunWithLogging("systemctl stop containerd && systemctl disable containerd && rm -rf /var/lib/containerd")
+	if err != nil {
+		return err
+	}
+	err = remoteBash.RunWithLogging("systemctl stop kubelet && systemctl disable kubelet")
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *ClusterUsecase) restartKubelet(_ context.Context, cluster *Cluster, node *Node) error {
+	remoteBash := utils.NewRemoteBash(utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey}, c.log)
 	for {
 		err := remoteBash.RunWithLogging("systemctl disable kubelet && systemctl stop kubelet")
 		if err != nil {
@@ -800,24 +801,4 @@ func (c *ClusterUsecase) restartKubelet(remoteBash *utils.RemoteBash) error {
 		}
 		return nil
 	}
-}
-
-func (cc *ClusterUsecase) uninstallNode(remoteBash *utils.RemoteBash) error {
-	err := remoteBash.RunWithLogging("kubeadm reset --force")
-	if err != nil {
-		return err
-	}
-	err = remoteBash.RunWithLogging("rm -rf $HOME/.kube && rm -rf /etc/kubernetes && rm -rf /etc/cni")
-	if err != nil {
-		return err
-	}
-	err = remoteBash.RunWithLogging("systemctl stop containerd && systemctl disable containerd && rm -rf /var/lib/containerd")
-	if err != nil {
-		return err
-	}
-	err = remoteBash.RunWithLogging("systemctl stop kubelet && systemctl disable kubelet")
-	if err != nil {
-		return err
-	}
-	return nil
 }

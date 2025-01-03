@@ -31,7 +31,10 @@ Thumbs.db
 *.cert
 *.key
 *.log
+*.tar.gz
+*.zip
 bin/
+log/
 
 # Develop tools
 .vscode/

@@ -12,6 +12,13 @@ import (
 	"strings"
 )
 
+func GetServerStoragePathByNames(packageNames ...string) string {
+	if len(packageNames) == 0 {
+		return ""
+	}
+	return filepath.Join(packageNames...)
+}
+
 func IsFileExist(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil || os.IsExist(err)
@@ -132,35 +139,30 @@ func MergePath(paths ...string) string {
 	return strings.Join(pathArr, "/")
 }
 
-func DownloadFile(url string, filepath string) error {
-	resp, err := http.Get(url)
+func DownloadFile(rawURL string) (string, error) {
+	resp, err := http.Get(rawURL)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	out, err := os.Create(filepath)
+	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		return err
+		return "", err
+	}
+	path := parsedURL.Path
+	fileName := filepath.Base(path)
+
+	out, err := os.Create(fileName)
+	if err != nil {
+		return "", err
 	}
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func GetFileNameFromURL(rawURL string) (string, error) {
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
 		return "", err
 	}
 
-	path := parsedURL.Path
-
-	fileName := filepath.Base(path)
 	return fileName, nil
 }

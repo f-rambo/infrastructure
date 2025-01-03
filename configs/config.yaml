@@ -11,4 +11,4 @@ log:
   max_backups: 3
   max_age: 28
 resource:
-  url: "https://www.github.com/..."
+  url: "https://github.com/f-rambo/infrastructure/releases/download/v0.0.1/resource-v0.0.1.tar.gz"

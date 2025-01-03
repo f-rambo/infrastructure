@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/log"
+	"github.com/pkg/errors"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -140,6 +143,35 @@ func (s *RemoteBash) RunWithLogging(command string, args ...string) error {
 		return fmt.Errorf("command execution failed: %w", err)
 	}
 
+	return nil
+}
+
+func (s *RemoteBash) SftpFile(localFile, remoteFile string) error {
+	_, err := s.connections()
+	if err != nil {
+		return err
+	}
+	defer s.close()
+	sftpClient, err := sftp.NewClient(s.sshClient)
+	if err != nil {
+		return errors.Wrap(err, "failed to create sftp client")
+	}
+	defer sftpClient.Close()
+	srcFile, err := os.Open(localFile)
+	if err != nil {
+		return errors.Wrap(err, "failed to open local file")
+	}
+	defer srcFile.Close()
+	dstFile, err := sftpClient.Create(remoteFile)
+	if err != nil {
+		return errors.Wrap(err, "failed to create destination file")
+	}
+	defer dstFile.Close()
+	bytesCopied, err := dstFile.ReadFrom(srcFile)
+	if err != nil {
+		return errors.Wrap(err, "failed to copy file")
+	}
+	s.log.Infof("Copied %d bytes from %s to %s", bytesCopied, localFile, remoteFile)
 	return nil
 }
 

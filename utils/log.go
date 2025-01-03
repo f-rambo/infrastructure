@@ -1,8 +1,6 @@
 package utils
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
@@ -17,14 +15,10 @@ type logtool struct {
 	lumberjackLogger *lumberjack.Logger
 }
 
-func NewLog(conf *conf.Bootstrap) (*logtool, error) {
+func NewLog(conf *conf.Bootstrap) *logtool {
 	logConf := conf.Log
-	logFilePath, err := GetLogFilePath(conf.Server.Name)
-	if err != nil {
-		return nil, err
-	}
 	lumberjackLogger := &lumberjack.Logger{
-		Filename:   logFilePath,
+		Filename:   GetLogFilePath(),
 		MaxSize:    int(logConf.MaxSize),
 		MaxBackups: int(logConf.MaxBackups),
 		MaxAge:     int(logConf.MaxAge),
@@ -33,7 +27,7 @@ func NewLog(conf *conf.Bootstrap) (*logtool, error) {
 	return &logtool{
 		logger:           log.NewStdLogger(lumberjackLogger),
 		lumberjackLogger: lumberjackLogger,
-	}, nil
+	}
 }
 
 func (l *logtool) Log(level log.Level, keyvals ...interface{}) error {
@@ -54,14 +48,6 @@ func GetLogContenteKeyvals() []interface{} {
 	}
 }
 
-func GetLogFilePath(filename string) (string, error) {
-	logPath, err := GetServerStorePathByNames(LogPackage)
-	if err != nil {
-		return "", err
-	}
-	err = os.MkdirAll(logPath, 0755)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(logPath, fmt.Sprintf("%s.log", filename)), nil
+func GetLogFilePath() string {
+	return filepath.Join(GetServerStoragePathByNames("log"), "log.log")
 }
