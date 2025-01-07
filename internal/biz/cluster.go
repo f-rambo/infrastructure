@@ -27,19 +27,8 @@ const (
 	DefaultBandwidth = 5
 )
 
-func (c *Cluster) DecodeNodeIps(ips string) []string {
+func (c *Cluster) RangeNodeIps(startIp, endIp string) []string {
 	var result []string
-	cidrs := strings.Split(ips, ",")
-	for _, cidr := range cidrs {
-		cidr = strings.TrimSpace(cidr)
-		ip, ipNet, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
-		for ip := ip.Mask(ipNet.Mask); ipNet.Contains(ip); inc(ip) {
-			result = append(result, ip.String())
-		}
-	}
 	return result
 }
 
@@ -486,20 +475,31 @@ var GPUSpecMap = map[string]NodeGPUSpec{
 }
 
 func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluster) error {
-	ips := cluster.DecodeNodeIps(cluster.GetNodeIps())
+	ips := cluster.RangeNodeIps(cluster.GetNodeStartIp(), cluster.GetNodeEndIp())
 	errGroup, _ := errgroup.WithContext(ctx)
+	errGroup.SetLimit(10)
 	shellPath := utils.GetServerStoragePathByNames(utils.ShellPackage)
 	nodeInforMaps := make([]map[string]string, 0)
 	lock := new(sync.Mutex)
 	for _, ip := range ips {
 		nodeUser := cluster.NodeUser
 		nodeIp := ip
+		nodeOk := false
+		for _, node := range cluster.Nodes {
+			if node.Ip == nodeIp && node.Status != NodeStatus_NodeStatus_UNSPECIFIED {
+				nodeOk = true
+			}
+		}
+		if nodeOk {
+			continue
+		}
 		errGroup.Go(func() error {
 			nodeInfoMap := make(map[string]string)
 			remoteBash := utils.NewRemoteBash(utils.Server{Name: nodeIp, Host: nodeIp, User: nodeUser, Port: 22, PrivateKey: cluster.PrivateKey}, c.log)
 			systemInfoOutput, err := remoteBash.Run("bash", utils.MergePath(shellPath, SystemInfoShell))
 			if err != nil {
-				return err
+				// connection refused
+				return nil
 			}
 			systemInfoMap := make(map[string]any)
 			if err := json.Unmarshal([]byte(systemInfoOutput), &systemInfoMap); err != nil {
@@ -517,12 +517,6 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 	err := errGroup.Wait()
 	if err != nil {
 		return err
-	}
-	if cluster.NodeGroups == nil {
-		cluster.NodeGroups = make([]*NodeGroup, 0)
-	}
-	if cluster.Nodes == nil {
-		cluster.Nodes = make([]*Node, 0)
 	}
 	nodeGroupMaps := make(map[string][]*Node)
 	for _, m := range nodeInforMaps {
@@ -558,11 +552,11 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 		}
 		nodeGroupMaps[cluster.EncodeNodeGroup(nodegroup)] = append(nodeGroupMaps[cluster.EncodeNodeGroup(nodegroup)], node)
 	}
-	for k, nodes := range nodeGroupMaps {
+	for nodeGroupEncodeKey, nodes := range nodeGroupMaps {
 		nodeGroupExits := false
 		nodeGrpupId := ""
 		for _, ng := range cluster.NodeGroups {
-			if cluster.EncodeNodeGroup(ng) == k {
+			if cluster.EncodeNodeGroup(ng) == nodeGroupEncodeKey {
 				nodeGrpupId = ng.Id
 				nodeGroupExits = true
 				break
@@ -587,7 +581,7 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 			}
 			continue
 		}
-		nodegroup := cluster.DecodeNodeGroup(k)
+		nodegroup := cluster.DecodeNodeGroup(nodeGroupEncodeKey)
 		nodegroup.Id = uuid.NewString()
 		for _, node := range nodes {
 			node.ClusterId = cluster.Id

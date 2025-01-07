@@ -4,7 +4,6 @@ import (
 	"time"
 
 	cluster "github.com/f-rambo/cloud-copilot/infrastructure/api/cluster"
-	logApi "github.com/f-rambo/cloud-copilot/infrastructure/api/log"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/interfaces"
 	"github.com/go-kratos/kratos/v2/log"
@@ -14,7 +13,7 @@ import (
 )
 
 // NewGRPCServer new a gRPC server.
-func NewGRPCServer(c *conf.Bootstrap, logInterface *interfaces.LogInterface, clusterInterface *interfaces.ClusterInterface, logger log.Logger) *grpc.Server {
+func NewGRPCServer(c *conf.Bootstrap, clusterInterface *interfaces.ClusterInterface, logger log.Logger) *grpc.Server {
 	var opts = []grpc.ServerOption{
 		grpc.Middleware(
 			recovery.Recovery(),
@@ -35,6 +34,5 @@ func NewGRPCServer(c *conf.Bootstrap, logInterface *interfaces.LogInterface, clu
 	}
 	srv := grpc.NewServer(opts...)
 	cluster.RegisterClusterInterfaceServer(srv, clusterInterface)
-	logApi.RegisterLogInterfaceServer(srv, logInterface)
 	return srv
 }

@@ -23,12 +23,11 @@ import (
 
 // wireApp init kratos application.
 func wireApp(bootstrap *conf.Bootstrap, logger log.Logger) (*kratos.App, func(), error) {
-	logInterface := interfaces.NewLogInterface(logger, bootstrap)
 	awsCloudUsecase := biz.NewAwsCloudUseCase(logger)
 	aliCloudUsecase := biz.NewAliCloudUseCase(logger)
 	clusterUsecase := biz.NewClusterUsecase(bootstrap, logger)
 	clusterInterface := interfaces.NewClusterInterface(awsCloudUsecase, aliCloudUsecase, clusterUsecase, bootstrap, logger)
-	grpcServer := server.NewGRPCServer(bootstrap, logInterface, clusterInterface, logger)
+	grpcServer := server.NewGRPCServer(bootstrap, clusterInterface, logger)
 	app := newApp(logger, grpcServer)
 	return app, func() {
 	}, nil

@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -128,6 +129,8 @@ func (c *ClusterInterface) CreateCloudBasicResource(cluster *biz.Cluster, stream
 	if err := c.permissionChecking(cluster); err != nil {
 		return err
 	}
+	jsonStr, _ := json.Marshal(cluster)
+	c.log.Info(string(jsonStr))
 	if cluster.Type == biz.ClusterType_AWS {
 		err := c.awsUc.Connections(stream.Context(), cluster)
 		if err != nil {
