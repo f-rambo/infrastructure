@@ -80,18 +80,6 @@ func (a *AliCloudUsecase) Connections(ctx context.Context, cluster *Cluster) (er
 	return nil
 }
 
-func (a *AliCloudUsecase) CheckAccessIdAndKey(ctx context.Context, cluster *Cluster) error {
-	_, err := a.vpcClient.DescribeVpcs(&vpc20160428.DescribeVpcsRequest{
-		RegionId:   tea.String(cluster.Region),
-		PageNumber: tea.Int32(1),
-		PageSize:   tea.Int32(50),
-	})
-	if err != nil {
-		return errors.Wrapf(err, "invalid access id or key")
-	}
-	return nil
-}
-
 func (a *AliCloudUsecase) GetAvailabilityRegions(ctx context.Context, cluster *Cluster) error {
 	res, err := a.ecsClient.DescribeRegions(&ecs20140526.DescribeRegionsRequest{
 		AcceptLanguage:     tea.String("zh-CN"),
@@ -116,11 +104,8 @@ func (a *AliCloudUsecase) GetAvailabilityRegions(ctx context.Context, cluster *C
 }
 
 func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Cluster) error {
-	if cluster.Region == "" {
-		cluster.Region = alicloudDefaultRegion
-	}
 	zonesRes, err := a.ecsClient.DescribeZones(&ecs20140526.DescribeZonesRequest{
-		AcceptLanguage:     tea.String("zh-CN"),
+		AcceptLanguage:     tea.String("en-US"),
 		RegionId:           tea.String(cluster.Region),
 		InstanceChargeType: tea.String("PostPaid"),
 		SpotStrategy:       tea.String("NoSpot"),
@@ -131,6 +116,7 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 	if len(zonesRes.Body.Zones.Zone) == 0 {
 		return errors.New("no availability zones found")
 	}
+	zones := make([]*ecs20140526.DescribeZonesResponseBodyZonesZone, 0)
 	for _, zone := range zonesRes.Body.Zones.Zone {
 		if tea.StringValue(zone.ZoneType) != "AvailabilityZone" {
 			continue
@@ -151,12 +137,32 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 		if !utils.InArray("DedicatedHost", zoneResourceType) {
 			continue
 		}
-		cluster.AddCloudResource(&CloudResource{
-			RefId: tea.StringValue(zone.ZoneId),
-			Name:  tea.StringValue(zone.LocalName),
-			Type:  ResourceType_AVAILABILITY_ZONES,
-			Value: os.Getenv(ALICLOUD_REGION),
-		})
+		zones = append(zones, zone)
+
+	}
+	gatewayAvailableZones, err := a.vpcClient.ListEnhanhcedNatGatewayAvailableZones(&vpc20160428.ListEnhanhcedNatGatewayAvailableZonesRequest{
+		RegionId:       tea.String(cluster.Region),
+		AcceptLanguage: tea.String("en-US"),
+	})
+	if err != nil {
+		return errors.Wrap(err, "failed to list nat gateway available zones")
+	}
+	for _, zone := range zones {
+		gatewayOk := false
+		for _, gatewayZone := range gatewayAvailableZones.Body.Zones {
+			if tea.StringValue(gatewayZone.ZoneId) == tea.StringValue(zone.ZoneId) {
+				gatewayOk = true
+				break
+			}
+		}
+		if gatewayOk {
+			cluster.AddCloudResource(&CloudResource{
+				RefId: tea.StringValue(zone.ZoneId),
+				Name:  tea.StringValue(zone.LocalName),
+				Type:  ResourceType_AVAILABILITY_ZONES,
+				Value: os.Getenv(ALICLOUD_REGION),
+			})
+		}
 	}
 	return nil
 }
@@ -313,8 +319,8 @@ func (a *AliCloudUsecase) checkingInstanceInventory(regionId, zoneId, instanceTy
 		InstanceType:        tea.String(instanceTypeId),
 		DestinationResource: tea.String("InstanceType"),
 		IoOptimized:         tea.String("optimized"),
-		SystemDiskCategory:  tea.String("cloud_essd"),
-		DataDiskCategory:    tea.String("cloud_essd"),
+		SystemDiskCategory:  tea.String("cloud_ssd"),
+		DataDiskCategory:    tea.String("cloud_ssd"),
 		NetworkCategory:     tea.String("vpc"),
 		ResourceType:        tea.String("instance"),
 	})
@@ -453,7 +459,7 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 				InstanceType:       tea.String(node.InstanceType),
 				VSwitchId:          tea.String(privateSubnet.RefId),
 				SystemDisk: &ecs20140526.CreateInstanceRequestSystemDisk{
-					Category: tea.String("cloud_essd"),
+					Category: tea.String("cloud_ssd"),
 					Size:     tea.Int32(node.SystemDiskSize),
 				},
 			})
@@ -969,7 +975,6 @@ func (a *AliCloudUsecase) createEips(_ context.Context, cluster *Cluster) error 
 	for {
 		eipRes, err := a.vpcClient.DescribeEipAddresses(&vpc20160428.DescribeEipAddressesRequest{
 			RegionId:   tea.String(cluster.Region),
-			Status:     tea.String("Available"),
 			PageNumber: tea.Int32(pageNumber),
 			PageSize:   tea.Int32(50),
 		})
@@ -1056,6 +1061,9 @@ func (a *AliCloudUsecase) createEips(_ context.Context, cluster *Cluster) error 
 		a.log.Infof("elastic ip %s allocated for zone %s", tea.StringValue(eipRes.Body.EipAddress), az.RefId)
 	}
 	// wait eip status to be available
+	if len(eipIds) == 0 {
+		return nil
+	}
 	timeOutNumber := 0
 	eipsOk := false
 	for {
@@ -1676,28 +1684,30 @@ func (a *AliCloudUsecase) ManageSLB(_ context.Context, cluster *Cluster) error {
 	vServerNames := make([]string, 0)
 	vServerNameProtMap := make(map[string]int32)
 	vServerBackendServerMap := make(map[string][]map[string]string)
-	for _, v := range cluster.IngressControllerRules {
-		if v.Access != IngressControllerRuleAccess_PUBLIC {
-			continue
-		}
-		for port := v.StartPort; port <= v.EndPort; port++ {
-			backendServerMaps := make([]map[string]string, 0)
-			instanceids := make([]string, 0)
-			for _, masterNode := range masterNodes {
-				instanceids = append(instanceids, masterNode.InstanceId)
-				backendServerMaps = append(backendServerMaps, map[string]string{
-					"ServerId":    masterNode.InstanceId,
-					"Weight":      "100",
-					"Type":        "ecs",
-					"Port":        fmt.Sprintf("%d", port),
-					"Description": fmt.Sprintf("%s-%s", masterNode.Name, masterNode.InstanceId),
-				})
+	if len(masterNodes) > 0 && len(cluster.IngressControllerRules) > 0 {
+		for _, v := range cluster.IngressControllerRules {
+			if v.Access != IngressControllerRuleAccess_PUBLIC {
+				continue
 			}
-			instanceidStr := utils.Md5(strings.Join(instanceids, ","))
-			vServerName := fmt.Sprintf("%s-%d", instanceidStr, port)
-			vServerNames = append(vServerNames, vServerName)
-			vServerBackendServerMap[vServerName] = backendServerMaps
-			vServerNameProtMap[vServerName] = port
+			for port := v.StartPort; port <= v.EndPort; port++ {
+				backendServerMaps := make([]map[string]string, 0)
+				instanceids := make([]string, 0)
+				for _, masterNode := range masterNodes {
+					instanceids = append(instanceids, masterNode.InstanceId)
+					backendServerMaps = append(backendServerMaps, map[string]string{
+						"ServerId":    masterNode.InstanceId,
+						"Weight":      "100",
+						"Type":        "ecs",
+						"Port":        fmt.Sprintf("%d", port),
+						"Description": fmt.Sprintf("%s-%s", masterNode.Name, masterNode.InstanceId),
+					})
+				}
+				instanceidStr := utils.Md5(strings.Join(instanceids, ","))
+				vServerName := fmt.Sprintf("%s-%d", instanceidStr, port)
+				vServerNames = append(vServerNames, vServerName)
+				vServerBackendServerMap[vServerName] = backendServerMaps
+				vServerNameProtMap[vServerName] = port
+			}
 		}
 	}
 

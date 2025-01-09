@@ -2,7 +2,6 @@ package interfaces
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -63,6 +62,9 @@ func (c *ClusterInterface) Ping(args *clusterApi.PingMessage, stream clusterApi.
 }
 
 func (c *ClusterInterface) GetZones(ctx context.Context, cluster *biz.Cluster) (*clusterApi.CloudResources, error) {
+	if err := c.permissionChecking(cluster); err != nil {
+		return nil, err
+	}
 	response := &clusterApi.CloudResources{Resources: make([]*biz.CloudResource, 0)}
 	if !cluster.Type.IsCloud() {
 		return response, nil
@@ -82,10 +84,6 @@ func (c *ClusterInterface) GetZones(ctx context.Context, cluster *biz.Cluster) (
 		if err != nil {
 			return nil, err
 		}
-		err = c.aliUc.CheckAccessIdAndKey(ctx, cluster)
-		if err != nil {
-			return nil, err
-		}
 		err = c.aliUc.GetAvailabilityZones(ctx, cluster)
 		if err != nil {
 			return nil, err
@@ -96,6 +94,9 @@ func (c *ClusterInterface) GetZones(ctx context.Context, cluster *biz.Cluster) (
 }
 
 func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster) (*clusterApi.CloudResources, error) {
+	if err := c.permissionChecking(cluster); err != nil {
+		return nil, err
+	}
 	response := &clusterApi.CloudResources{Resources: make([]*biz.CloudResource, 0)}
 	if !cluster.Type.IsCloud() {
 		return response, nil
@@ -129,8 +130,6 @@ func (c *ClusterInterface) CreateCloudBasicResource(cluster *biz.Cluster, stream
 	if err := c.permissionChecking(cluster); err != nil {
 		return err
 	}
-	jsonStr, _ := json.Marshal(cluster)
-	c.log.Info(string(jsonStr))
 	if cluster.Type == biz.ClusterType_AWS {
 		err := c.awsUc.Connections(stream.Context(), cluster)
 		if err != nil {

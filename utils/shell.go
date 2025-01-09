@@ -270,7 +270,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
+Environment="KUBELET_KUBECONFIG_ARGS=--kubeconfig=/etc/kubernetes/kubelet.conf"
 Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml"
 EnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env
 EnvironmentFile=-/etc/sysconfig/kubelet
@@ -317,6 +317,16 @@ function install_kubernetes_software() {
     exit 1
   fi
 
+  if ! systemctl daemon-reload; then
+    log "Error: Failed to reload systemd daemon"
+    exit 1
+  fi
+
+  if ! systemctl enable kubelet; then
+    log "Error: Failed to enable kubelet service"
+    exit 1
+  fi
+
 }
 
 containerdService=$(
@@ -328,7 +338,7 @@ After=network.target local-fs.target dbus.service
 
 [Service]
 ExecStartPre=-/sbin/modprobe overlay
-ExecStart=/usr/local/bin/containerd
+ExecStart=/usr/local/bin/containerd --config /etc/containerd/config.toml
 
 Type=notify
 Delegate=yes
@@ -369,7 +379,7 @@ function install_containerd() {
 
   mkdir -p /etc/containerd
   touch /etc/containerd/config.toml
-  containerd config default | sed -e "s/SystemdCgroup = false/SystemdCgroup = true/g" | tee /etc/containerd/config.toml
+  containerd config default | sed -e '/containerd.runtimes.runc.options/a\            SystemdCgroup = true' | tee /etc/containerd/config.toml >/dev/null
 
   if ! echo "$containerdService" | tee /usr/lib/systemd/system/containerd.service >/dev/null; then
     log "Error: Failed to write to /usr/lib/systemd/system/containerd.service"
@@ -410,16 +420,11 @@ function install_containerd() {
   ctr -n k8s.io images import "$kubernetes_image_path"
 }
 
+install_containerd
+
 install_kubernetes_software
 
-if systemctl is-active --quiet containerd; then
-  log "containerd is already running, skipping installation."
-else
-  log "containerd is not running, proceeding with installation."
-  install_containerd
-fi
-
-log "kubernetes software installation completed successfully."
+log "kubernetes software and containerd installation completed successfully."
 
 exit 0
 
@@ -476,16 +481,28 @@ fi
 
 log "Installing conntrack"
 if command -v apt-get &>/dev/null; then
-    if ! apt-get update && apt-get install -y conntrack; then
+    if ! apt-get update; then
+        log "Error: Failed to update package list."
+        exit 1
+    fi
+    if ! apt-get install -y conntrack; then
         log "Error: Failed to install conntrack."
         exit 1
     fi
 elif command -v yum &>/dev/null; then
+    if ! yum update; then
+        log "Error: Failed to update package list."
+        exit 1
+    fi
     if ! yum install -y conntrack; then
         log "Error: Failed to install conntrack."
         exit 1
     fi
 elif command -v dnf &>/dev/null; then
+    if ! dnf update; then
+        log "Error: Failed to update package list."
+        exit 1
+    fi
     if ! dnf install -y conntrack; then
         log "Error: Failed to install conntrack."
         exit 1

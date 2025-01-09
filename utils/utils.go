@@ -153,6 +153,14 @@ func DownloadFile(rawURL string) (string, error) {
 	path := parsedURL.Path
 	fileName := filepath.Base(path)
 
+	if fileName == "" {
+		return "", fmt.Errorf("failed to get file name from URL")
+	}
+
+	if IsFileExist(fileName) {
+		return fileName, nil
+	}
+
 	out, err := os.Create(fileName)
 	if err != nil {
 		return "", err
