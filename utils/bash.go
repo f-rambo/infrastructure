@@ -21,7 +21,7 @@ func NewBash(log *log.Helper) *Bash {
 }
 
 func (b *Bash) RunCommand(command string, args ...string) (output string, err error) {
-	b.log.Info("exec command: %s %s", command, strings.Join(args, " "))
+	b.log.Infof("exec command: %s %s", command, strings.Join(args, " "))
 
 	cmd := exec.Command(command, args...)
 	var stdout, stderr bytes.Buffer
@@ -45,7 +45,7 @@ func (b *Bash) RunCommand(command string, args ...string) (output string, err er
 }
 
 func (b *Bash) RunCommandWithLogging(command string, args ...string) error {
-	b.log.Info("exec command: %s %s", command, strings.Join(args, " "))
+	b.log.Infof("exec command: %s %s", command, strings.Join(args, " "))
 	cmd := exec.Command(command, args...)
 
 	stdout, err := cmd.StdoutPipe()

@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,6 +28,10 @@ var (
 	// flagconf is the config flag.
 	flagconf string
 
+	Resource string = "resource"
+
+	Shell string = "shell"
+
 	id, _ = os.Hostname()
 )
 
@@ -35,6 +40,9 @@ func init() {
 }
 
 func newApp(logger log.Logger, gs *grpc.Server) *kratos.App {
+	configDir := filepath.Dir(flagconf)
+	resourceDir := fmt.Sprintf("%s/%s", filepath.Dir(configDir), Resource)
+	shellDir := fmt.Sprintf("%s/%s", resourceDir, Shell)
 	return kratos.New(
 		kratos.ID(id),
 		kratos.Name(Name),
@@ -46,7 +54,9 @@ func newApp(logger log.Logger, gs *grpc.Server) *kratos.App {
 			utils.OSKey.String():             runtime.GOOS,
 			utils.ArchKey.String():           runtime.GOARCH,
 			utils.ConfKey.String():           flagconf,
-			utils.ConfDirKey.String():        filepath.Dir(flagconf),
+			utils.ConfDirKey.String():        configDir,
+			utils.ResourceDir.String():       resourceDir,
+			utils.ShellDir.String():          shellDir,
 		}),
 		kratos.Logger(logger),
 		kratos.Server(gs),
@@ -75,10 +85,6 @@ func main() {
 	Version = bc.Server.Version
 	if Name == "" || Version == "" {
 		panic("name or version is empty")
-	}
-
-	if err := utils.ShellToolsInit(); err != nil {
-		panic(err)
 	}
 
 	utilLogger := utils.NewLog(&bc)

@@ -5,7 +5,6 @@ AUTHOR=frambos
 IMG=$(AUTHOR)/$(SERVER_NAME):$(VERSION)
 BUILDER_NAME=$(SERVER_NAME)-multi-platform-buildx
 PLATFORMS = linux/amd64 linux/arm64
-SERVER_HOME=$(HOME)/.$(SERVER_NAME)
 
 INTERNAL_PROTO_FILES=$(shell find internal -name *.proto)
 API_PROTO_FILES=$(shell find api -name *.proto)
@@ -91,8 +90,8 @@ download-resource:
 		platform_formated=$$(echo $$platform | tr '[:upper:]' '[:lower:]' | tr '/' '-'); \
 		container_name=$$platform_formated-dind-container; \
 		arch=$$(echo $$platform | cut -d '/' -f2); \
-		mkdir -p $(SERVER_HOME)/resource/$$arch; \
-		docker run --network host --privileged --platform=$$platform --name $$container_name -d --rm -v $(SERVER_HOME)/resource/$$arch:/resource -v $(SERVER_HOME)/shell/:/shell $$image_name; \
+		mkdir -p resource/$$arch; \
+		docker run --network host --privileged --platform=$$platform --name $$container_name -d --rm -v resource/$$arch:/resource -v shell/:/shell $$image_name; \
 		sleep 5; \
 		docker exec -it $$container_name /bin/bash /shell/download.sh /resource; \
 		docker stop $$container_name; \
@@ -101,7 +100,7 @@ download-resource:
 
 .PHONY: package-resource
 package-resource:
-	tar -C $(SERVER_HOME) -czvf $(SERVER_HOME)/resource-$(VERSION).tar.gz resource;
+	tar -C ./ -czvf resource-$(VERSION).tar.gz resource;
 
 .PHONY: all
 all:

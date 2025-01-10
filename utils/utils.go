@@ -56,23 +56,15 @@ func DecodeYaml(yamlContent string, keyVal map[string]string) string {
 	return yamlContent
 }
 
-func WriteFile(dir, filename, content string) error {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	filePath := fmt.Sprintf("%s/%s", dir, filename)
-
+func WriteFile(filePath, content string) error {
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open or create file: %w", err)
 	}
 	defer file.Close()
-
 	if _, err := io.WriteString(file, content); err != nil {
 		return fmt.Errorf("failed to write to file: %w", err)
 	}
-
 	return nil
 }
 
@@ -140,12 +132,6 @@ func MergePath(paths ...string) string {
 }
 
 func DownloadFile(rawURL string) (string, error) {
-	resp, err := http.Get(rawURL)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return "", err
@@ -166,6 +152,12 @@ func DownloadFile(rawURL string) (string, error) {
 		return "", err
 	}
 	defer out.Close()
+
+	resp, err := http.Get(rawURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
 
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {

@@ -20,6 +20,8 @@ const (
 	ArchKey           MatedataKey = "arch"
 	ConfKey           MatedataKey = "conf"
 	ConfDirKey        MatedataKey = "confdir"
+	ResourceDir       MatedataKey = "resourcedir"
+	ShellDir          MatedataKey = "shelldir"
 )
 
 func GetFromContextByKey(ctx context.Context, key MatedataKey) string {

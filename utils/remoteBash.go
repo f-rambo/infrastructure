@@ -190,3 +190,18 @@ func (s *RemoteBash) GetRootHome() (string, error) {
 	}
 	return strings.TrimSpace(homePath), nil
 }
+
+func GetResourcePath(userHomePath string) string {
+	if userHomePath == "" {
+		return "resource"
+	}
+	return MergePath(userHomePath, "resource")
+}
+
+func GetShellPath(resourcePath string) string {
+	return MergePath(resourcePath, "shell")
+}
+
+func GetResourceConfigPath(resourcePath string) string {
+	return MergePath(resourcePath, "configs")
+}

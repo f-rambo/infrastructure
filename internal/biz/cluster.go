@@ -390,37 +390,48 @@ var (
 )
 
 func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster) error {
-	var bostionHost *Node
-	var bostionHostIp string
-	if !cluster.Type.IsCloud() {
-		for _, node := range cluster.Nodes {
-			if node.Role == NodeRole_MASTER {
-				bostionHost = node
-				bostionHostIp = node.Ip
-				break
-			}
-		}
-	}
-	if cluster.Type.IsCloud() {
-		slb := cluster.GetSingleCloudResource(ResourceType_LOAD_BALANCER)
-		for _, node := range cluster.Nodes {
-			if node.InstanceId == "" || node.Role != NodeRole_MASTER {
-				continue
-			}
-			bostionHost = node
-			bostionHostIp = slb.Value
-			break
-		}
-	}
-	if bostionHost == nil || bostionHostIp == "" {
-		return errors.New("bostion host is not found")
-	}
-	tarFile, err := utils.DownloadFile(c.conf.Resource.GetUrl())
+	tarFilename, err := utils.DownloadFile(c.conf.Resource.GetUrl())
 	if err != nil {
 		return err
 	}
-	remoteTarfile := fmt.Sprintf("/tmp/%s", tarFile)
-	remoteBash := utils.NewRemoteBash(utils.Server{Name: bostionHostIp, Host: bostionHostIp, User: bostionHost.User, Port: 22, PrivateKey: cluster.PrivateKey}, c.log)
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	localBash := utils.NewBash(c.log)
+	err = localBash.RunCommandWithLogging(fmt.Sprintf("tar -C %s -zxvf %s", currentDir, tarFilename))
+	if err != nil {
+		return err
+	}
+	clusterConfigPath := utils.MergePath(utils.GetResourceConfigPath(utils.GetResourcePath("")), ClusterConfiguration)
+	clusterConfigData, err := os.ReadFile(clusterConfigPath)
+	if err != nil {
+		return err
+	}
+	clusterConfigMap := map[string]string{
+		"CLUSTER_NAME":       cluster.Name,
+		"CLUSTER_VERSION":    cluster.Version,
+		"API_SERVER_ADDRESS": cluster.ApiServerAddress,
+		"IMAGE_REPO":         cluster.ImageRepo,
+		"SERVICE_CIDR":       ServiceCIDR,
+		"POD_CIDR":           PodCIDR,
+	}
+	cluster.Config = utils.DecodeYaml(string(clusterConfigData), clusterConfigMap)
+	err = utils.WriteFile(clusterConfigPath, cluster.Config)
+	if err != nil {
+		return err
+	}
+	localTarFilename := fmt.Sprintf("%s-%s", cluster.Name, tarFilename)
+	err = localBash.RunCommandWithLogging(fmt.Sprintf("tar -C %s -czvf %s %s", currentDir, localTarFilename, utils.GetResourcePath("")))
+	if err != nil {
+		return err
+	}
+
+	remoteTarfile := fmt.Sprintf("/tmp/%s", tarFilename)
+	remoteBash, _, err := c.getFirstNodeBash(ctx, cluster)
+	if err != nil {
+		return err
+	}
 	userHomePath, err := remoteBash.GetUserHome()
 	if err != nil {
 		return err
@@ -438,7 +449,7 @@ func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster)
 		return err
 	}
 	if cast.ToInt(strings.TrimSpace(fileNumber)) == 0 {
-		err = remoteBash.SftpFile(tarFile, remoteTarfile)
+		err = remoteBash.SftpFile(localTarFilename, remoteTarfile)
 		if err != nil {
 			return err
 		}
@@ -467,7 +478,7 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 	ips := cluster.RangeNodeIps(cluster.GetNodeStartIp(), cluster.GetNodeEndIp())
 	errGroup, _ := errgroup.WithContext(ctx)
 	errGroup.SetLimit(10)
-	shellPath := utils.GetServerStoragePathByNames(utils.ShellPackage)
+	shellPath := utils.GetFromContextByKey(ctx, utils.ShellDir)
 	nodeInforMaps := make([]map[string]string, 0)
 	lock := new(sync.Mutex)
 	for _, ip := range ips {
@@ -597,77 +608,25 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 }
 
 func (c *ClusterUsecase) Install(ctx context.Context, cluster *Cluster) error {
-	var firstMasterNodeUser string
-	var firstMasterNodeIp string
-	var firstMasterNodeName string
-	for _, v := range cluster.Nodes {
-		if v.Role == NodeRole_MASTER {
-			firstMasterNodeUser = v.User
-			firstMasterNodeIp = v.Ip
-			firstMasterNodeName = v.Name
-			break
-		}
+	remoteBash, firstMasterNodeName, err := c.getFirstNodeBash(ctx, cluster)
+	if err != nil {
+		return err
 	}
-	if firstMasterNodeUser == "" || firstMasterNodeName == "" {
-		return errors.New("master node not found")
-	}
-	if cluster.Type.IsCloud() {
-		slb := cluster.GetSingleCloudResource(ResourceType_LOAD_BALANCER)
-		firstMasterNodeIp = slb.Value
-	}
-	remoteBash := utils.NewRemoteBash(
-		utils.Server{Name: cluster.Name, Host: firstMasterNodeIp, User: firstMasterNodeUser, Port: 22, PrivateKey: cluster.PrivateKey},
-		c.log,
-	)
 	userHomePath, err := remoteBash.GetUserHome()
 	if err != nil {
 		return err
 	}
-	shellPath := utils.GetServerStoragePathByNames(utils.ShellPackage)
-	_, err = remoteBash.Run("mkdir", "-p", utils.MergePath(userHomePath, shellPath))
+	shellPath := utils.GetShellPath(utils.GetResourcePath(userHomePath))
+	err = remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, NodeInitShell), firstMasterNodeName)
 	if err != nil {
 		return err
 	}
-	err = remoteBash.SftpFile(utils.MergePath(shellPath, NodeInitShell), utils.MergePath(userHomePath, shellPath, NodeInitShell))
+	err = remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, KubernetesShell), utils.MergePath(userHomePath, "resource"))
 	if err != nil {
 		return err
 	}
-	err = remoteBash.RunWithLogging("bash", utils.MergePath(userHomePath, shellPath, NodeInitShell), firstMasterNodeName)
-	if err != nil {
-		return err
-	}
-	err = remoteBash.SftpFile(utils.MergePath(shellPath, KubernetesShell), utils.MergePath(userHomePath, shellPath, KubernetesShell))
-	if err != nil {
-		return err
-	}
-	err = remoteBash.RunWithLogging("bash", utils.MergePath(userHomePath, shellPath, KubernetesShell), utils.MergePath(userHomePath, "resource"))
-	if err != nil {
-		return err
-	}
-	clusterConfigPath := utils.MergePath(utils.GetFromContextByKey(ctx, utils.ConfDirKey), ClusterConfiguration)
-	clusterConfigData, err := os.ReadFile(clusterConfigPath)
-	if err != nil {
-		return err
-	}
-	clusterConfigMap := map[string]string{
-		"CLUSTER_NAME":       cluster.Name,
-		"CLUSTER_VERSION":    cluster.Version,
-		"API_SERVER_ADDRESS": cluster.ApiServerAddress,
-		"IMAGE_REPO":         cluster.ImageRepo,
-		"SERVICE_CIDR":       ServiceCIDR,
-		"POD_CIDR":           PodCIDR,
-	}
-	cluster.Config = utils.DecodeYaml(string(clusterConfigData), clusterConfigMap)
-	err = utils.WriteFile(shellPath, ClusterConfiguration, cluster.Config)
-	if err != nil {
-		return err
-	}
-	remoteClusterConfigPath := utils.MergePath(userHomePath, ClusterConfiguration)
-	err = remoteBash.SftpFile(utils.MergePath(shellPath, ClusterConfiguration), remoteClusterConfigPath)
-	if err != nil {
-		return err
-	}
-	err = remoteBash.RunWithLogging("kubeadm init --config", remoteClusterConfigPath, "--v=5")
+	clusterConfigPath := utils.MergePath(utils.GetResourceConfigPath(utils.GetResourcePath(userHomePath)), ClusterConfiguration)
+	err = remoteBash.RunWithLogging("kubeadm init --config", clusterConfigPath, "--v=5")
 	if err != nil {
 		remoteBash.RunWithLogging("kubeadm reset --force")
 		return err
@@ -701,18 +660,6 @@ func (c *ClusterUsecase) Install(ctx context.Context, cluster *Cluster) error {
 
 func (c *ClusterUsecase) UnInstall(ctx context.Context, cluster *Cluster) error {
 	for _, node := range cluster.Nodes {
-		if node.Role != NodeRole_WORKER {
-			continue
-		}
-		err := c.uninstallNode(ctx, cluster, node)
-		if err != nil {
-			return err
-		}
-	}
-	for _, node := range cluster.Nodes {
-		if node.Role != NodeRole_WORKER {
-			continue
-		}
 		err := c.uninstallNode(ctx, cluster, node)
 		if err != nil {
 			return err
@@ -739,9 +686,9 @@ func (c *ClusterUsecase) HandlerNodes(ctx context.Context, cluster *Cluster) err
 	return nil
 }
 
-func (c *ClusterUsecase) joinCluster(_ context.Context, cluster *Cluster, node *Node) error {
+func (c *ClusterUsecase) joinCluster(ctx context.Context, cluster *Cluster, node *Node) error {
 	remoteBash := utils.NewRemoteBash(utils.Server{Name: node.Name, Host: node.Ip, User: node.User, Port: 22, PrivateKey: cluster.PrivateKey}, c.log)
-	shellPath := utils.GetServerStoragePathByNames(utils.ShellPackage)
+	shellPath := utils.GetFromContextByKey(ctx, utils.ShellDir)
 	err := remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, NodeInitShell))
 	if err != nil {
 		return err
@@ -782,4 +729,30 @@ func (c *ClusterUsecase) uninstallNode(_ context.Context, cluster *Cluster, node
 		return err
 	}
 	return nil
+}
+
+func (c *ClusterUsecase) getFirstNodeBash(_ context.Context, cluster *Cluster) (*utils.RemoteBash, string, error) {
+	var firstMasterNodeUser string
+	var firstMasterNodeIp string
+	var firstMasterNodeName string
+	for _, v := range cluster.Nodes {
+		if v.Role == NodeRole_MASTER {
+			firstMasterNodeUser = v.User
+			firstMasterNodeIp = v.Ip
+			firstMasterNodeName = v.Name
+			break
+		}
+	}
+	if firstMasterNodeUser == "" || firstMasterNodeName == "" {
+		return nil, firstMasterNodeName, errors.New("master node not found")
+	}
+	if cluster.Type.IsCloud() {
+		slb := cluster.GetSingleCloudResource(ResourceType_LOAD_BALANCER)
+		firstMasterNodeIp = slb.Value
+	}
+	remoteBash := utils.NewRemoteBash(
+		utils.Server{Name: cluster.Name, Host: firstMasterNodeIp, User: firstMasterNodeUser, Port: 22, PrivateKey: cluster.PrivateKey},
+		c.log,
+	)
+	return remoteBash, firstMasterNodeName, nil
 }
