@@ -25,6 +25,14 @@ const (
 	DefaultBandwidth = 5
 )
 
+const (
+	CloudCopilotNamespace = "cloud-copilot"
+
+	ClusterInformation   = "cluster-info"
+	NodegroupInformation = "nodegroup-info"
+	NodeLableKey         = "node-lable"
+)
+
 func (c *Cluster) RangeNodeIps(startIp, endIp string) []string {
 	var result []string
 	return result
@@ -603,6 +611,64 @@ func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluste
 		}
 		cluster.NodeGroups = append(cluster.NodeGroups, nodegroup)
 		cluster.Nodes = append(cluster.Nodes, nodes...)
+	}
+	return nil
+}
+
+func (c *ClusterUsecase) ApplyServices(ctx context.Context, cluster *Cluster) error {
+	remoteBash, _, err := c.getFirstNodeBash(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	userHomePath, err := remoteBash.GetUserHome()
+	if err != nil {
+		return err
+	}
+	arch, err := remoteBash.Run("uname", "-m")
+	if err != nil {
+		return err
+	}
+	if arch == "aarch64" {
+		arch = "arm64"
+	}
+	if arch == "x86_64" {
+		arch = "amd64"
+	}
+	kubeCtlPath := utils.MergePath(userHomePath, "resource", arch, "kubernetes", cluster.Version, "kubectl")
+	err = remoteBash.RunWithLogging("install -m 755", kubeCtlPath, "/usr/local/bin/kubectl")
+	if err != nil {
+		return err
+	}
+	clusterEncodeString, err := utils.SerializeToBase64(cluster)
+	if err != nil {
+		return err
+	}
+	clusterConfigMapYaml := fmt.Sprintf(`
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: %s
+  name: %s
+data:
+  cluster-info: |
+    %s`, CloudCopilotNamespace, ClusterInformation, clusterEncodeString)
+	installYamlPath := c.conf.Resource.GetInstall()
+	installYamlData, err := os.ReadFile(installYamlPath)
+	if err != nil {
+		return err
+	}
+	err = utils.WriteFile(installYamlPath, string(installYamlData)+clusterConfigMapYaml)
+	if err != nil {
+		return err
+	}
+	err = remoteBash.SftpFile(installYamlPath, utils.MergePath(userHomePath, "install.yaml"))
+	if err != nil {
+		return err
+	}
+	err = remoteBash.RunWithLogging("kubectl apply -f", utils.MergePath(userHomePath, "install.yaml"))
+	if err != nil {
+		return err
 	}
 	return nil
 }

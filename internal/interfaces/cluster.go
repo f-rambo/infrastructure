@@ -367,6 +367,10 @@ func (c *ClusterInterface) Install(cluster *biz.Cluster, stream clusterApi.Clust
 	if err != nil {
 		return err
 	}
+	err = c.clusterUc.ApplyServices(stream.Context(), cluster)
+	if err != nil {
+		return err
+	}
 	err = c.closeSsh(stream.Context(), cluster)
 	if err != nil {
 		return err

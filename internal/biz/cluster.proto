@@ -4,7 +4,6 @@ package biz.cluster;
 
 option go_package = "github.com/f-rambo/cloud-copilot/infrastructure/internal/biz;";
 
-
 enum ClusterType {
       ClusterType_UNSPECIFIED = 0;
       LOCAL = 1;
@@ -13,7 +12,7 @@ enum ClusterType {
 }
 
 enum ClusterStatus {
-      UNSPECIFIED = 0;
+      ClusterStatus_UNSPECIFIED = 0;
       STARTING = 1;
       RUNNING = 2;
       STOPPING = 3;
@@ -137,10 +136,12 @@ message Cluster {
       string node_user = 20; // @gotags: gorm:"column:node_user; default:''; NOT NULL"
       string node_start_ip = 21; // @gotags: gorm:"column:node_start_ip; default:''; NOT NULL"
       string node_end_ip = 22; // @gotags: gorm:"column:node_end_ip; default:''; NOT NULL"
-      repeated NodeGroup node_groups = 23; // @gotags: gorm:"-"
-      repeated Node nodes = 24; // @gotags: gorm:"-"
-      repeated CloudResource cloud_resources = 25; // @gotags: gorm:"-"
-      repeated IngressControllerRule ingress_controller_rules = 26; // @gotags: gorm:"-"
+      string containerd_version = 23;
+      string runc_version = 24;
+      repeated NodeGroup node_groups = 25; // @gotags: gorm:"-"
+      repeated Node nodes = 26; // @gotags: gorm:"-"
+      repeated CloudResource cloud_resources = 27; // @gotags: gorm:"-"
+      repeated IngressControllerRule ingress_controller_rules = 28; // @gotags: gorm:"-"
 }
 
 message NodeGroup {

@@ -28,4 +28,5 @@ message Log {
 
 message Resource {
       string url = 1;
+      string install = 2;
 }

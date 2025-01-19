@@ -2,6 +2,7 @@ package utils
 
 import (
 	"crypto/md5"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"google.golang.org/protobuf/proto"
 )
 
 func GetServerStoragePathByNames(packageNames ...string) string {
@@ -165,4 +168,20 @@ func DownloadFile(rawURL string) (string, error) {
 	}
 
 	return fileName, nil
+}
+
+func SerializeToBase64(msg proto.Message) (string, error) {
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+func DeserializeFromBase64(data string, msg proto.Message) error {
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return err
+	}
+	return proto.Unmarshal(decoded, msg)
 }
