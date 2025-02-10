@@ -2,18 +2,18 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: cluster-management
+  name: cloud-copilot
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: cluster-management-sa
-  namespace: cluster-management
+  name: cloud-copilot-sa
+  namespace: cloud-copilot
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cluster-management-role
+  name: cloud-copilot-role
 rules:
 - apiGroups: ["*"]
   resources: ["*"]
@@ -22,34 +22,37 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: cluster-management-binding
+  name: cloud-copilot-binding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: cluster-management-role
+  name: cloud-copilot-role
 subjects:
 - kind: ServiceAccount
-  name: cluster-management-sa
-  namespace: cluster-management
+  name: cloud-copilot-sa
+  namespace: cloud-copilot
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: cluster-management-service
-  namespace: cluster-management
+  name: cloud-copilot-service
+  namespace: cloud-copilot
 spec:
   selector:
-    app: cluster-management
+    app: cloud-copilot
   ports:
     - protocol: TCP
-      port: 80
-      targetPort: 80
+      port: 8000
+      targetPort: 8000
+    - protocol: TCP
+      port: 9000
+      targetPort: 9000
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: cluster-management-config
-  namespace: cluster-management
+  name: cloud-copilot-config
+  namespace: cloud-copilot
 data:
   config.yaml: |
     # your config here
@@ -57,8 +60,8 @@ data:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: cluster-management-pvc
-  namespace: cluster-management
+  name: cloud-copilot-pvc
+  namespace: cloud-copilot
 spec:
   accessModes:
     - ReadWriteOnce
@@ -69,28 +72,40 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cluster-management-deployment
-  namespace: cluster-management
+  name: cloud-copilot-deployment
+  namespace: cloud-copilot
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
-      app: cluster-management
+      app: cloud-copilot
   template:
     metadata:
       labels:
-        app: cluster-management
+        app: cloud-copilot
     spec:
-      serviceAccountName: cluster-management-sa
+      serviceAccountName: cloud-copilot-sa
       tolerations:
       - key: "node-role.kubernetes.io/master"
         operator: "Exists"
         effect: "NoSchedule"
       containers:
-      - name: cluster-management-app
+      - name: cloud-copilot
         image: your-app-image:v1.0.0
         ports:
-        - containerPort: 80
+        - containerPort: 8000
+        - containerPort: 9000
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+      - name: infrastructure
+        image: your-app-image:v1.0.0
+        ports:
+        - containerPort: 9002
         resources:
           requests:
             memory: "256Mi"
@@ -99,18 +114,42 @@ spec:
             memory: "512Mi"
             cpu: "200m"
         volumeMounts:
-        - name: cluster-management-storage
-          mountPath: /app/data
+        - name: infrastructure-storage
+          mountPath: /app/resource
+      - name: cluster-runtime
+        image: your-app-image:v1.0.0
+        ports:
+        - containerPort: 9003
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
       volumes:
-      - name: cluster-management-storage
+      - name: cloud-copilot-storage
         persistentVolumeClaim:
-          claimName: cluster-management-pvc
+          claimName: cloud-copilot-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: cloud-copilot
+spec:
+  selector:
+    app: postgres
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
-  namespace: cluster-management
+  namespace: cloud-copilot
 spec:
   serviceName: "postgres"
   replicas: 1
@@ -124,14 +163,16 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:13.4
+        image: postgres:17.2
         ports:
         - containerPort: 5432
         env:
         - name: POSTGRES_DB
-          value: mydatabase
+          value: "cloud-copilot"
         - name: POSTGRES_USER
-          value: myuser
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "123456"
         volumeMounts:
         - name: postgres-storage
           mountPath: /var/lib/postgresql/data

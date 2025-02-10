@@ -18,9 +18,7 @@ import (
 )
 
 const (
-	VpcCIDR     = "172.16.0.0/16"
-	ServiceCIDR = "10.96.0.0/16"
-	PodCIDR     = "10.244.0.0/16"
+	VpcCIDR = "172.16.0.0/16"
 
 	DefaultBandwidth = 5
 )
@@ -31,6 +29,17 @@ const (
 	ClusterInformation   = "cluster-info"
 	NodegroupInformation = "nodegroup-info"
 	NodeLableKey         = "node-lable"
+
+	ClusterConfig = `apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: "{CLUSTER_NAME}"
+kubernetesVersion: "{CLUSTER_VERSION}"
+certificatesDir: "/etc/kubernetes/pki"
+imageRepository: "{IMAGE_REPO}"
+controlPlaneEndpoint: "{API_SERVER_ADDRESS}:6443"
+networking:
+  dnsDomain: "{CLUSTER_NAME}"
+`
 )
 
 func (c *Cluster) RangeNodeIps(startIp, endIp string) []string {
@@ -402,45 +411,26 @@ func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster)
 	if err != nil {
 		return err
 	}
-	currentDir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	localBash := utils.NewBash(c.log)
-	err = localBash.RunCommandWithLogging(fmt.Sprintf("tar -C %s -zxvf %s", currentDir, tarFilename))
-	if err != nil {
-		return err
-	}
-	clusterConfigPath := utils.MergePath(utils.GetResourceConfigPath(utils.GetResourcePath("")), ClusterConfiguration)
-	clusterConfigData, err := os.ReadFile(clusterConfigPath)
-	if err != nil {
-		return err
-	}
 	clusterConfigMap := map[string]string{
 		"CLUSTER_NAME":       cluster.Name,
 		"CLUSTER_VERSION":    cluster.Version,
 		"API_SERVER_ADDRESS": cluster.ApiServerAddress,
 		"IMAGE_REPO":         cluster.ImageRepo,
-		"SERVICE_CIDR":       ServiceCIDR,
-		"POD_CIDR":           PodCIDR,
 	}
-	cluster.Config = utils.DecodeYaml(string(clusterConfigData), clusterConfigMap)
-	err = utils.WriteFile(clusterConfigPath, cluster.Config)
+	cluster.Config = utils.DecodeYaml(ClusterConfig, clusterConfigMap)
+	err = utils.WriteFile(ClusterConfiguration, cluster.Config)
 	if err != nil {
 		return err
 	}
-	localTarFilename := fmt.Sprintf("%s-%s", cluster.Name, tarFilename)
-	err = localBash.RunCommandWithLogging(fmt.Sprintf("tar -C %s -czvf %s %s", currentDir, localTarFilename, utils.GetResourcePath("")))
-	if err != nil {
-		return err
-	}
-
-	remoteTarfile := fmt.Sprintf("/tmp/%s", tarFilename)
 	remoteBash, _, err := c.getFirstNodeBash(ctx, cluster)
 	if err != nil {
 		return err
 	}
 	userHomePath, err := remoteBash.GetUserHome()
+	if err != nil {
+		return err
+	}
+	err = remoteBash.SftpFile(ClusterConfiguration, utils.MergePath(userHomePath, ClusterConfiguration))
 	if err != nil {
 		return err
 	}
@@ -452,12 +442,13 @@ func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster)
 	if cast.ToInt(strings.TrimSpace(fileNumber)) > 0 {
 		return nil
 	}
+	remoteTarfile := fmt.Sprintf("/tmp/%s", tarFilename)
 	fileNumber, err = remoteBash.Run("ls", remoteTarfile, "| wc -l")
 	if err != nil {
 		return err
 	}
 	if cast.ToInt(strings.TrimSpace(fileNumber)) == 0 {
-		err = remoteBash.SftpFile(localTarFilename, remoteTarfile)
+		err = remoteBash.SftpFile(tarFilename, remoteTarfile)
 		if err != nil {
 			return err
 		}
@@ -683,40 +674,40 @@ func (c *ClusterUsecase) Install(ctx context.Context, cluster *Cluster) error {
 		return err
 	}
 	shellPath := utils.GetShellPath(utils.GetResourcePath(userHomePath))
-	err = remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, NodeInitShell), firstMasterNodeName)
+	err = remoteBash.RunWithLogging("sudo bash", utils.MergePath(shellPath, NodeInitShell), firstMasterNodeName)
 	if err != nil {
 		return err
 	}
-	err = remoteBash.RunWithLogging("bash", utils.MergePath(shellPath, KubernetesShell), utils.MergePath(userHomePath, "resource"))
+	err = remoteBash.RunWithLogging("sudo bash", utils.MergePath(shellPath, KubernetesShell), utils.MergePath(userHomePath, "resource"))
 	if err != nil {
 		return err
 	}
-	clusterConfigPath := utils.MergePath(utils.GetResourceConfigPath(utils.GetResourcePath(userHomePath)), ClusterConfiguration)
-	err = remoteBash.RunWithLogging("kubeadm init --config", clusterConfigPath, "--v=5")
+	clusterConfigPath := utils.MergePath(userHomePath, ClusterConfiguration)
+	err = remoteBash.RunWithLogging("sudo kubeadm init --config", clusterConfigPath, "--v=5")
 	if err != nil {
-		remoteBash.RunWithLogging("kubeadm reset --force")
+		remoteBash.RunWithLogging("sudo kubeadm reset --force")
 		return err
 	}
-	err = remoteBash.RunWithLogging("rm -f $HOME/.kube/config && mkdir -p $HOME/.kube && cp -i /etc/kubernetes/admin.conf $HOME/.kube/config && chown $(id -u):$(id -g) $HOME/.kube/config")
+	err = remoteBash.RunWithLogging("rm -f $HOME/.kube/config && mkdir -p $HOME/.kube && sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config && sudo chown $(id -u):$(id -g) $HOME/.kube/config")
 	if err != nil {
 		return err
 	}
-	token, err := remoteBash.Run("kubeadm token create")
+	token, err := remoteBash.Run("sudo kubeadm token create")
 	if err != nil {
 		return err
 	}
 	cluster.Token = token
-	ca, err := remoteBash.Run("cat /etc/kubernetes/pki/ca.crt")
+	ca, err := remoteBash.Run("sudo cat /etc/kubernetes/pki/ca.crt")
 	if err != nil {
 		return err
 	}
 	cluster.CaData = ca
-	cert, err := remoteBash.Run("cat /etc/kubernetes/pki/apiserver.crt")
+	cert, err := remoteBash.Run("sudo cat /etc/kubernetes/pki/apiserver.crt")
 	if err != nil {
 		return err
 	}
 	cluster.CertData = cert
-	key, err := remoteBash.Run("cat /etc/kubernetes/pki/apiserver.key")
+	key, err := remoteBash.Run("sudo cat /etc/kubernetes/pki/apiserver.key")
 	if err != nil {
 		return err
 	}
