@@ -610,7 +610,8 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 				}
 			}
 			if !ok {
-				node.ErrorInfo = NodeError_INSUFFICIENT_INVENTORY
+				node.ErrorType = NodeErrorType_INFRASTRUCTURE_ERROR
+				node.ErrorMessage = "INSUFFICIENT INVENTORY"
 				continue
 			}
 			instancesOutput, err := a.ec2Client.RunInstances(ctx, &ec2.RunInstancesInput{

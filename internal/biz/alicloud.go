@@ -447,7 +447,8 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 				}
 			}
 			if !ok {
-				node.ErrorInfo = NodeError_INSUFFICIENT_INVENTORY
+				node.ErrorType = NodeErrorType_INFRASTRUCTURE_ERROR
+				node.ErrorMessage = "INSUFFICIENT INVENTORY"
 				continue
 			}
 			createInstanceRes, err := a.ecsClient.CreateInstance(&ecs20140526.CreateInstanceRequest{
@@ -464,7 +465,8 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 				},
 			})
 			if err != nil {
-				node.ErrorInfo = NodeError_CREATE_FAILURE
+				node.ErrorType = NodeErrorType_INFRASTRUCTURE_ERROR
+				node.ErrorMessage = "CREATE FAILURE"
 				return errors.Wrap(err, "failed to create instance")
 			}
 			node.InstanceId = tea.StringValue(createInstanceRes.Body.InstanceId)
@@ -538,7 +540,8 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 			continue
 		}
 		if _, ok := instanceMap[node.InstanceId]; !ok {
-			node.ErrorInfo = NodeError_START_TIMEOUT
+			node.ErrorType = NodeErrorType_INFRASTRUCTURE_ERROR
+			node.ErrorMessage = "START TIMEOUT"
 			continue
 		}
 		netWorkInterface, err := a.ecsClient.DescribeNetworkInterfaces(&ecs20140526.DescribeNetworkInterfacesRequest{
