@@ -13,3 +13,4 @@ log:
 resource:
   url: "https://github.com/f-rambo/infrastructure/releases/download/v0.0.1/resource-v0.0.1.tar.gz"
   install: "install.yaml"
+  vpc_cidr: "172.16.0.0/16"

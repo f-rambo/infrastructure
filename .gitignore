@@ -35,7 +35,7 @@ Thumbs.db
 *.zip
 bin/
 log/
-cluster.yaml
+*example.yaml
 
 # Develop tools
 .vscode/

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	elasticloadbalancingv2Types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
+	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/pkg/errors"
@@ -35,6 +37,7 @@ const (
 )
 
 type AwsCloudUsecase struct {
+	c                   *conf.Bootstrap
 	ec2Client           *ec2.Client
 	elbv2Client         *elasticloadbalancingv2.Client
 	eksClient           *eks.Client
@@ -43,11 +46,11 @@ type AwsCloudUsecase struct {
 	log                 *log.Helper
 }
 
-func NewAwsCloudUseCase(logger log.Logger) *AwsCloudUsecase {
-	c := &AwsCloudUsecase{
+func NewAwsCloudUseCase(c *conf.Bootstrap, logger log.Logger) *AwsCloudUsecase {
+	return &AwsCloudUsecase{
+		c:   c,
 		log: log.NewHelper(logger),
 	}
-	return c
 }
 
 func (a *AwsCloudUsecase) Connections(ctx context.Context, cluster *Cluster) error {
@@ -557,7 +560,7 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 	}
 	deleteInstanceIDs := make([]string, 0)
 	for _, instance := range instances {
-		if utils.InArray(aws.ToString(instance.InstanceId), needDeleteInstanceIDs) {
+		if slices.Contains(needDeleteInstanceIDs, aws.ToString(instance.InstanceId)) {
 			deleteInstanceIDs = append(deleteInstanceIDs, aws.ToString(instance.InstanceId))
 		}
 	}
@@ -574,7 +577,7 @@ func (a *AwsCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 			return fmt.Errorf("failed to wait for instance termination: %w", err)
 		}
 		for _, node := range cluster.Nodes {
-			if utils.InArray(node.InstanceId, deleteInstanceIDs) {
+			if slices.Contains(deleteInstanceIDs, node.InstanceId) {
 				node.InstanceId = ""
 			}
 		}
@@ -688,7 +691,7 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 		if len(cluster.GetCloudResource(ResourceType_VPC)) != 0 {
 			return nil
 		}
-		if aws.ToString(vpc.CidrBlock) != VpcCIDR {
+		if aws.ToString(vpc.CidrBlock) != a.c.Resource.VpcCidr {
 			continue
 		}
 		a.createTags(ctx, aws.ToString(vpc.VpcId), ResourceType_VPC, vpcTags)
@@ -705,7 +708,7 @@ func (a *AwsCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 	}
 	// Create VPC if it doesn't exist
 	vpcOutput, err := a.ec2Client.CreateVpc(ctx, &ec2.CreateVpcInput{
-		CidrBlock: aws.String(VpcCIDR),
+		CidrBlock: aws.String(a.c.Resource.VpcCidr),
 		TagSpecifications: []ec2Types.TagSpecification{
 			{
 				ResourceType: ec2Types.ResourceTypeVpc,
@@ -904,7 +907,7 @@ func (a *AwsCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		if cluster.GetCloudResourceByTags(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: name}) != nil {
 			continue
 		}
-		cidr, err := utils.GenerateSubnet(VpcCIDR, subnetExitsCidrs)
+		cidr, err := utils.GenerateSubnet(a.c.Resource.VpcCidr, subnetExitsCidrs)
 		if err != nil {
 			return err
 		}
@@ -1247,7 +1250,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 			ResourceTypeKeyValue_ACCESS:  ResourceTypeKeyValue_ACCESS_PRIVATE,
 			ResourceTypeKeyValue_ZONE_ID: routeTableTags[ResourceTypeKeyValue_ZONE_ID],
 		})
-		if utils.InArray(privateSubnet.RefId, subnetIds) {
+		if slices.Contains(subnetIds, privateSubnet.RefId) {
 			continue
 		}
 		_, err := a.ec2Client.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
@@ -1276,7 +1279,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		if natGateway == nil {
 			return errors.New("nat gateway not found in route table tags")
 		}
-		if utils.InArray(natGateway.RefId, natgatewayIds) {
+		if slices.Contains(natgatewayIds, natGateway.RefId) {
 			continue
 		}
 		_, err := a.ec2Client.CreateRoute(ctx, &ec2.CreateRouteInput{
@@ -1365,7 +1368,7 @@ func (a *AwsCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		}
 	}
 	for _, v := range subnetCloudResource {
-		if utils.InArray(v.RefId, exitsSubnetIds) {
+		if slices.Contains(exitsSubnetIds, v.RefId) {
 			continue
 		}
 		_, err = a.ec2Client.AssociateRouteTable(ctx, &ec2.AssociateRouteTableInput{
@@ -1520,7 +1523,7 @@ func (a *AwsCloudUsecase) ManageSecurityGroup(ctx context.Context, cluster *Clus
 			sgRule.Protocol, sgRule.IpCidr,
 			fmt.Sprintf("%d/%d", sgRule.StartPort, sgRule.EndPort)},
 			"-")
-		if utils.InArray(sgRuelVals, exitsRules) {
+		if slices.Contains(exitsRules, sgRuelVals) {
 			continue
 		}
 		_, err = a.ec2Client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
@@ -1571,7 +1574,7 @@ func (a *AwsCloudUsecase) ManageSLB(ctx context.Context, cluster *Cluster) error
 			}
 			subnetOk := false
 			for _, zone := range lb.AvailabilityZones {
-				if utils.InArray(aws.ToString(zone.ZoneName), zoneNames) {
+				if slices.Contains(zoneNames, aws.ToString(zone.ZoneName)) {
 					subnetOk = true
 					break
 				}
@@ -1650,7 +1653,7 @@ func (a *AwsCloudUsecase) ManageSLB(ctx context.Context, cluster *Cluster) error
 	}
 	exitsListenerPorts := make([]int32, 0)
 	for _, listener := range listenerRes.Listeners {
-		if utils.InArrayInt32(aws.ToInt32(listener.Port), ports) {
+		if slices.Contains(ports, aws.ToInt32(listener.Port)) {
 			exitsListenerPorts = append(exitsListenerPorts, aws.ToInt32(listener.Port))
 			continue
 		}
@@ -1673,7 +1676,7 @@ func (a *AwsCloudUsecase) ManageSLB(ctx context.Context, cluster *Cluster) error
 	}
 	exitsTargetGroupPorts := make([]int32, 0)
 	for _, targetGroup := range targetGroupRes.TargetGroups {
-		if utils.InArrayInt32(aws.ToInt32(targetGroup.Port), ports) {
+		if slices.Contains(ports, aws.ToInt32(targetGroup.Port)) {
 			exitsTargetGroupPorts = append(exitsTargetGroupPorts, aws.ToInt32(targetGroup.Port))
 			continue
 		}
@@ -1689,7 +1692,7 @@ func (a *AwsCloudUsecase) ManageSLB(ctx context.Context, cluster *Cluster) error
 	// handler target group listener
 	for _, port := range ports {
 		// Create target group
-		if utils.InArrayInt32(port, exitsTargetGroupPorts) {
+		if slices.Contains(exitsTargetGroupPorts, port) {
 			continue
 		}
 		targetGroupRes, err := a.elbv2Client.CreateTargetGroup(ctx, &elasticloadbalancingv2.CreateTargetGroupInput{
@@ -1726,7 +1729,7 @@ func (a *AwsCloudUsecase) ManageSLB(ctx context.Context, cluster *Cluster) error
 	}
 	for _, port := range ports {
 		// create listener
-		if utils.InArrayInt32(port, exitsListenerPorts) {
+		if slices.Contains(exitsListenerPorts, port) {
 			continue
 		}
 		_, err = a.elbv2Client.CreateListener(ctx, &elasticloadbalancingv2.CreateListenerInput{

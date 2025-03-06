@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -25,24 +26,6 @@ func GetServerStoragePathByNames(packageNames ...string) string {
 func IsFileExist(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil || os.IsExist(err)
-}
-
-func InArray(item string, arr []string) bool {
-	for _, v := range arr {
-		if v == item {
-			return true
-		}
-	}
-	return false
-}
-
-func InArrayInt32(item int32, arr []int32) bool {
-	for _, v := range arr {
-		if v == item {
-			return true
-		}
-	}
-	return false
 }
 
 func Md5(str string) string {
@@ -184,4 +167,51 @@ func DeserializeFromBase64(data string, msg proto.Message) error {
 		return err
 	}
 	return proto.Unmarshal(decoded, msg)
+}
+
+// example: startIp 192.168.0.1 endIp 192.168.0.254, return 192.168.0.1 192.168.0.2 .... 192.168.0.254
+func RangeIps(startIp, endIp string) []string {
+	var result []string
+
+	start := ip4ToUint32(startIp)
+	end := ip4ToUint32(endIp)
+
+	if start > end {
+		return result
+	}
+
+	for i := start; i <= end; i++ {
+		result = append(result, uint32ToIp4(i))
+	}
+
+	return result
+}
+
+func ip4ToUint32(ip string) uint32 {
+	bits := strings.Split(ip, ".")
+	if len(bits) != 4 {
+		return 0
+	}
+
+	b0, _ := strconv.Atoi(bits[0])
+	b1, _ := strconv.Atoi(bits[1])
+	b2, _ := strconv.Atoi(bits[2])
+	b3, _ := strconv.Atoi(bits[3])
+
+	var sum uint32
+	sum += uint32(b0) << 24
+	sum += uint32(b1) << 16
+	sum += uint32(b2) << 8
+	sum += uint32(b3)
+
+	return sum
+}
+
+func uint32ToIp4(ipInt uint32) string {
+	b0 := ((ipInt >> 24) & 0xFF)
+	b1 := ((ipInt >> 16) & 0xFF)
+	b2 := ((ipInt >> 8) & 0xFF)
+	b3 := (ipInt & 0xFF)
+
+	return fmt.Sprintf("%d.%d.%d.%d", b0, b1, b2, b3)
 }

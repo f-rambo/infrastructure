@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	slb20140515 "github.com/alibabacloud-go/slb-20140515/v4/client"
 	"github.com/alibabacloud-go/tea/tea"
 	vpc20160428 "github.com/alibabacloud-go/vpc-20160428/v6/client"
+	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/pkg/errors"
@@ -34,6 +36,7 @@ const (
 )
 
 type AliCloudUsecase struct {
+	c         *conf.Bootstrap
 	log       *log.Helper
 	vpcClient *vpc20160428.Client
 	ecsClient *ecs20140526.Client
@@ -41,11 +44,11 @@ type AliCloudUsecase struct {
 	csClient  *cs20151215.Client
 }
 
-func NewAliCloudUseCase(logger log.Logger) *AliCloudUsecase {
-	c := &AliCloudUsecase{
+func NewAliCloudUseCase(c *conf.Bootstrap, logger log.Logger) *AliCloudUsecase {
+	return &AliCloudUsecase{
+		c:   c,
 		log: log.NewHelper(logger),
 	}
-	return c
 }
 
 func (a *AliCloudUsecase) Connections(ctx context.Context, cluster *Cluster) (err error) {
@@ -122,19 +125,20 @@ func (a *AliCloudUsecase) GetAvailabilityZones(ctx context.Context, cluster *Clu
 			continue
 		}
 		zoneResourceType := tea.StringSliceValue(zone.AvailableResourceCreation.ResourceTypes)
-		if !utils.InArray("VSwitch", zoneResourceType) {
+
+		if !slices.Contains(zoneResourceType, "VSwitch") {
 			continue
 		}
-		if !utils.InArray("IoOptimized", zoneResourceType) {
+		if !slices.Contains(zoneResourceType, "IoOptimized") {
 			continue
 		}
-		if !utils.InArray("Instance", zoneResourceType) {
+		if !slices.Contains(zoneResourceType, "Instance") {
 			continue
 		}
-		if !utils.InArray("Disk", zoneResourceType) {
+		if !slices.Contains(zoneResourceType, "Disk") {
 			continue
 		}
-		if !utils.InArray("DedicatedHost", zoneResourceType) {
+		if !slices.Contains(zoneResourceType, "DedicatedHost") {
 			continue
 		}
 		zones = append(zones, zone)
@@ -402,7 +406,7 @@ func (a *AliCloudUsecase) ManageInstance(ctx context.Context, cluster *Cluster) 
 	}
 	deleteInstanceIDs := make([]string, 0)
 	for _, instance := range instances {
-		if utils.InArray(tea.StringValue(instance.InstanceId), needDeleteInstanceIDs) {
+		if slices.Contains(needDeleteInstanceIDs, tea.StringValue(instance.InstanceId)) {
 			deleteInstanceIDs = append(deleteInstanceIDs, tea.StringValue(instance.InstanceId))
 		}
 	}
@@ -790,7 +794,7 @@ func (a *AliCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 		if len(cluster.GetCloudResource(ResourceType_VPC)) > 0 {
 			return nil
 		}
-		if tea.StringValue(vpc.CidrBlock) != VpcCIDR {
+		if tea.StringValue(vpc.CidrBlock) != a.c.Resource.VpcCidr {
 			continue
 		}
 		a.createVpcTags(cluster.Region, tea.StringValue(vpc.VpcId), "VPC", vpcTags)
@@ -808,7 +812,7 @@ func (a *AliCloudUsecase) createVPC(ctx context.Context, cluster *Cluster) error
 	vpcResponce, err := a.vpcClient.CreateVpc(&vpc20160428.CreateVpcRequest{
 		VpcName:   tea.String(cluster.Name + "-vpc"),
 		RegionId:  tea.String(cluster.Region),
-		CidrBlock: tea.String(VpcCIDR),
+		CidrBlock: tea.String(a.c.Resource.VpcCidr),
 	})
 	if err := a.handlerError(err); err != nil {
 		return err
@@ -934,7 +938,7 @@ func (a *AliCloudUsecase) createSubnets(ctx context.Context, cluster *Cluster) e
 		if cluster.GetCloudResourceByTags(ResourceType_SUBNET, map[ResourceTypeKeyValue]any{ResourceTypeKeyValue_NAME: name}) != nil {
 			continue
 		}
-		cidr, err := utils.GenerateSubnet(VpcCIDR, subnetExitsCidrs)
+		cidr, err := utils.GenerateSubnet(a.c.Resource.VpcCidr, subnetExitsCidrs)
 		if err != nil {
 			return err
 		}
@@ -1421,7 +1425,7 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 			ResourceTypeKeyValue_ACCESS:  ResourceTypeKeyValue_ACCESS_PRIVATE,
 			ResourceTypeKeyValue_ZONE_ID: routeTableTags[ResourceTypeKeyValue_ZONE_ID],
 		})
-		if utils.InArray(privateSubnet.RefId, subnetIds) {
+		if slices.Contains(subnetIds, privateSubnet.RefId) {
 			continue
 		}
 		_, err := a.vpcClient.AssociateRouteTable(&vpc20160428.AssociateRouteTableRequest{
@@ -1462,7 +1466,7 @@ func (a *AliCloudUsecase) createRouteTables(ctx context.Context, cluster *Cluste
 		if natGateway == nil {
 			return errors.New("nat gateway not found in route table tags")
 		}
-		if utils.InArray(natGateway.RefId, natgatewayIds) {
+		if slices.Contains(natgatewayIds, natGateway.RefId) {
 			continue
 		}
 		res, err := a.vpcClient.CreateRouteEntry(&vpc20160428.CreateRouteEntryRequest{
@@ -1599,7 +1603,8 @@ func (a *AliCloudUsecase) ManageSecurityGroup(ctx context.Context, cluster *Clus
 			sgRule.Protocol, sgRule.IpCidr,
 			fmt.Sprintf("%d/%d", sgRule.StartPort, sgRule.EndPort)},
 			"-")
-		if utils.InArray(sgRuelVals, exitsRules) {
+
+		if slices.Contains(exitsRules, sgRuelVals) {
 			continue
 		}
 		_, err = a.ecsClient.AuthorizeSecurityGroup(&ecs20140526.AuthorizeSecurityGroupRequest{
@@ -1725,7 +1730,7 @@ func (a *AliCloudUsecase) ManageSLB(_ context.Context, cluster *Cluster) error {
 	}
 	// clear not exits vserver group
 	for _, vserverGroup := range res.Body.VServerGroups.VServerGroup {
-		if utils.InArray(tea.StringValue(vserverGroup.VServerGroupName), vServerNames) {
+		if slices.Contains(vServerNames, tea.StringValue(vserverGroup.VServerGroupName)) {
 			continue
 		}
 		// delete listener
@@ -1784,7 +1789,6 @@ func (a *AliCloudUsecase) ManageSLB(_ context.Context, cluster *Cluster) error {
 			LoadBalancerId: tea.String(slbCloudResource.RefId),
 			ListenerPort:   tea.Int32(port),
 			VServerGroupId: vserverGroupRes.Body.VServerGroupId,
-			Bandwidth:      tea.Int32(DefaultBandwidth),
 			Scheduler:      tea.String("wrr"),
 			Description:    tea.String(vServerName),
 		})

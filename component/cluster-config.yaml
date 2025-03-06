@@ -1,0 +1,9 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: "{{.Name}}"
+kubernetesVersion: "{{.Version}}"
+certificatesDir: "/etc/kubernetes/pki"
+imageRepository: "{{.ImageRepo}}"
+controlPlaneEndpoint: "{{.ApiServerAddress}}"
+networking:
+  dnsDomain: "{{.Name}}"

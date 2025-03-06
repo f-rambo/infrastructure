@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
+	"github.com/f-rambo/cloud-copilot/infrastructure/component"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
@@ -17,35 +17,34 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const (
-	VpcCIDR = "172.16.0.0/16"
-
-	DefaultBandwidth = 5
-)
-
-const (
-	CloudCopilotNamespace = "cloud-copilot"
-
-	ClusterInformation   = "cluster-info"
-	NodegroupInformation = "nodegroup-info"
-	NodeLableKey         = "node-lable"
-
-	ClusterConfig = `apiVersion: kubeadm.k8s.io/v1beta4
-kind: ClusterConfiguration
-clusterName: "{CLUSTER_NAME}"
-kubernetesVersion: "{CLUSTER_VERSION}"
-certificatesDir: "/etc/kubernetes/pki"
-imageRepository: "{IMAGE_REPO}"
-controlPlaneEndpoint: "{API_SERVER_ADDRESS}:6443"
-networking:
-  dnsDomain: "{CLUSTER_NAME}"
-`
-)
-
-func (c *Cluster) RangeNodeIps(startIp, endIp string) []string {
-	var result []string
-	return result
+var ARCH_MAP = map[string]string{
+	"x86_64":  "amd64",
+	"aarch64": "arm64",
 }
+
+var ArchMap = map[string]NodeArchType{
+	"x86_64":  NodeArchType_AMD64,
+	"aarch64": NodeArchType_ARM64,
+}
+
+var GPUSpecMap = map[string]NodeGPUSpec{
+	"nvidia-a10":  NodeGPUSpec_NVIDIA_A10,
+	"nvidia-v100": NodeGPUSpec_NVIDIA_V100,
+	"nvidia-t4":   NodeGPUSpec_NVIDIA_T4,
+	"nvidia-p100": NodeGPUSpec_NVIDIA_P100,
+	"nvidia-p4":   NodeGPUSpec_NVIDIA_P4,
+}
+
+var (
+	NodeInitShell   string = "nodeinit.sh"
+	KubernetesShell string = "kubernetes.sh"
+	SystemInfoShell string = "systeminfo.sh"
+
+	ClusterConfiguration        string = "resource/cluster-config.yaml"
+	NormalNodeJoinConfiguration string = "resource/nodejoin-config.yaml"
+	MasterNodeJoinConfiguration string = "resource/masterjoin-config.yaml"
+	Install                     string = "resource/install.sh"
+)
 
 func (c *Cluster) GetCloudResource(resourceType ResourceType) []*CloudResource {
 	cloudResources := make([]*CloudResource, 0)
@@ -385,48 +384,16 @@ func NewClusterUsecase(conf *conf.Bootstrap, logger log.Logger) *ClusterUsecase 
 	return &ClusterUsecase{conf: conf, log: log.NewHelper(logger)}
 }
 
-var ARCH_MAP = map[string]string{
-	"x86_64":  "amd64",
-	"aarch64": "arm64",
-}
-
-const (
-	LocalEnv       = "local"
-	BostionHostEnv = "bostionhost"
-	ClusterEnv     = "cluster"
-)
-
-var (
-	NodeInitShell   string = "nodeinit.sh"
-	KubernetesShell string = "kubernetes.sh"
-	SystemInfoShell string = "systeminfo.sh"
-
-	ClusterConfiguration        string = "cluster.yaml"
-	NormalNodeJoinConfiguration string = "nodejoin.yaml"
-	MasterNodeJoinConfiguration string = "masterjoin.yaml"
-)
-
 func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster) error {
-	tarFilename, err := utils.DownloadFile(c.conf.Resource.GetUrl())
-	if err != nil {
-		return err
-	}
-	clusterConfigMap := map[string]string{
-		"CLUSTER_NAME":       cluster.Name,
-		"CLUSTER_VERSION":    cluster.Version,
-		"API_SERVER_ADDRESS": cluster.ApiServerAddress,
-		"IMAGE_REPO":         cluster.ImageRepo,
-	}
-	cluster.Config = utils.DecodeYaml(ClusterConfig, clusterConfigMap)
-	err = utils.WriteFile(ClusterConfiguration, cluster.Config)
-	if err != nil {
-		return err
-	}
 	remoteBash, _, err := c.getFirstNodeBash(ctx, cluster)
 	if err != nil {
 		return err
 	}
 	userHomePath, err := remoteBash.GetUserHome()
+	if err != nil {
+		return err
+	}
+	err = component.TransferredMeaning(cluster, ClusterConfiguration)
 	if err != nil {
 		return err
 	}
@@ -441,6 +408,10 @@ func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster)
 	}
 	if cast.ToInt(strings.TrimSpace(fileNumber)) > 0 {
 		return nil
+	}
+	tarFilename, err := utils.DownloadFile(c.conf.Resource.GetUrl())
+	if err != nil {
+		return err
 	}
 	remoteTarfile := fmt.Sprintf("/tmp/%s", tarFilename)
 	fileNumber, err = remoteBash.Run("ls", remoteTarfile, "| wc -l")
@@ -460,21 +431,8 @@ func (c *ClusterUsecase) MigrateResources(ctx context.Context, cluster *Cluster)
 	return nil
 }
 
-var ArchMap = map[string]NodeArchType{
-	"x86_64":  NodeArchType_AMD64,
-	"aarch64": NodeArchType_ARM64,
-}
-
-var GPUSpecMap = map[string]NodeGPUSpec{
-	"nvidia-a10":  NodeGPUSpec_NVIDIA_A10,
-	"nvidia-v100": NodeGPUSpec_NVIDIA_V100,
-	"nvidia-t4":   NodeGPUSpec_NVIDIA_T4,
-	"nvidia-p100": NodeGPUSpec_NVIDIA_P100,
-	"nvidia-p4":   NodeGPUSpec_NVIDIA_P4,
-}
-
 func (c *ClusterUsecase) GetNodesSystemInfo(ctx context.Context, cluster *Cluster) error {
-	ips := cluster.RangeNodeIps(cluster.GetNodeStartIp(), cluster.GetNodeEndIp())
+	ips := utils.RangeIps(cluster.GetNodeStartIp(), cluster.GetNodeEndIp())
 	errGroup, _ := errgroup.WithContext(ctx)
 	errGroup.SetLimit(10)
 	shellPath := utils.GetFromContextByKey(ctx, utils.ShellDir)
@@ -619,45 +577,25 @@ func (c *ClusterUsecase) ApplyServices(ctx context.Context, cluster *Cluster) er
 	if err != nil {
 		return err
 	}
-	if arch == "aarch64" {
-		arch = "arm64"
-	}
-	if arch == "x86_64" {
-		arch = "amd64"
+	arch = strings.TrimSpace(strings.ToLower(arch))
+	archMapVal, ok := ARCH_MAP[arch]
+	if ok {
+		arch = archMapVal
 	}
 	kubeCtlPath := utils.MergePath(userHomePath, "resource", arch, "kubernetes", cluster.Version, "kubectl")
 	err = remoteBash.RunWithLogging("install -m 755", kubeCtlPath, "/usr/local/bin/kubectl")
 	if err != nil {
 		return err
 	}
-	clusterEncodeString, err := utils.SerializeToBase64(cluster)
+	err = component.TransferredMeaning(cluster, Install)
 	if err != nil {
 		return err
 	}
-	clusterConfigMapYaml := fmt.Sprintf(`
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  namespace: %s
-  name: %s
-data:
-  cluster-info: |
-    %s`, CloudCopilotNamespace, ClusterInformation, clusterEncodeString)
-	installYamlPath := c.conf.Resource.GetInstall()
-	installYamlData, err := os.ReadFile(installYamlPath)
+	err = remoteBash.SftpFile(Install, utils.MergePath(userHomePath, Install))
 	if err != nil {
 		return err
 	}
-	err = utils.WriteFile(installYamlPath, string(installYamlData)+clusterConfigMapYaml)
-	if err != nil {
-		return err
-	}
-	err = remoteBash.SftpFile(installYamlPath, utils.MergePath(userHomePath, "install.yaml"))
-	if err != nil {
-		return err
-	}
-	err = remoteBash.RunWithLogging("kubectl apply -f", utils.MergePath(userHomePath, "install.yaml"))
+	err = remoteBash.RunWithLogging("kubectl apply -f", utils.MergePath(userHomePath, Install))
 	if err != nil {
 		return err
 	}
