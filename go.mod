@@ -3,7 +3,6 @@ module github.com/f-rambo/cloud-copilot/infrastructure
 go 1.22.3
 
 require (
-	github.com/alibabacloud-go/cs-20151215/v5 v5.8.0
 	github.com/alibabacloud-go/darabonba-openapi/v2 v2.0.10
 	github.com/alibabacloud-go/ecs-20140526/v4 v4.26.7
 	github.com/alibabacloud-go/slb-20140515/v4 v4.0.9
@@ -12,10 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.32.5
 	github.com/aws/aws-sdk-go-v2/config v1.28.5
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.192.0
-	github.com/aws/aws-sdk-go-v2/service/eks v1.52.1
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.42.0
-	github.com/aws/aws-sdk-go-v2/service/iam v1.38.1
-	github.com/aws/aws-sdk-go-v2/service/servicequotas v1.25.6
 	github.com/go-kratos/kratos/v2 v2.8.0
 	github.com/google/uuid v1.6.0
 	github.com/google/wire v0.6.0

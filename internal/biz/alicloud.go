@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	cs20151215 "github.com/alibabacloud-go/cs-20151215/v5/client"
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	ecs20140526 "github.com/alibabacloud-go/ecs-20140526/v4/client"
 	slb20140515 "github.com/alibabacloud-go/slb-20140515/v4/client"
@@ -41,7 +40,6 @@ type AliCloudUsecase struct {
 	vpcClient *vpc20160428.Client
 	ecsClient *ecs20140526.Client
 	slbClient *slb20140515.Client
-	csClient  *cs20151215.Client
 }
 
 func NewAliCloudUseCase(c *conf.Bootstrap, logger log.Logger) *AliCloudUsecase {
@@ -75,10 +73,6 @@ func (a *AliCloudUsecase) Connections(ctx context.Context, cluster *Cluster) (er
 	a.slbClient, err = slb20140515.NewClient(config)
 	if err != nil {
 		return errors.Wrap(err, "failed to create slb client")
-	}
-	a.csClient, err = cs20151215.NewClient(config)
-	if err != nil {
-		return errors.Wrap(err, "failed to create cs client")
 	}
 	return nil
 }

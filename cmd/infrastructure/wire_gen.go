@@ -26,7 +26,7 @@ func wireApp(bootstrap *conf.Bootstrap, logger log.Logger) (*kratos.App, func(),
 	awsCloudUsecase := biz.NewAwsCloudUseCase(bootstrap, logger)
 	aliCloudUsecase := biz.NewAliCloudUseCase(bootstrap, logger)
 	clusterUsecase := biz.NewClusterUsecase(bootstrap, logger)
-	clusterInterface := interfaces.NewClusterInterface(awsCloudUsecase, aliCloudUsecase, clusterUsecase, bootstrap, logger)
+	clusterInterface := interfaces.NewClusterInterface(awsCloudUsecase, aliCloudUsecase, clusterUsecase, logger)
 	grpcServer := server.NewGRPCServer(bootstrap, clusterInterface, logger)
 	app := newApp(logger, grpcServer)
 	return app, func() {

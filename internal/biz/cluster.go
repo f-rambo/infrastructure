@@ -40,10 +40,8 @@ var (
 	KubernetesShell string = "kubernetes.sh"
 	SystemInfoShell string = "systeminfo.sh"
 
-	ClusterConfiguration        string = "resource/cluster-config.yaml"
-	NormalNodeJoinConfiguration string = "resource/nodejoin-config.yaml"
-	MasterNodeJoinConfiguration string = "resource/masterjoin-config.yaml"
-	Install                     string = "resource/install.sh"
+	ClusterConfiguration string = "resource/cluster-config.yaml"
+	Install              string = "resource/install.sh"
 )
 
 func (c *Cluster) GetCloudResource(resourceType ResourceType) []*CloudResource {

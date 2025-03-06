@@ -2,15 +2,12 @@ package interfaces
 
 import (
 	"context"
-	"fmt"
 	"strings"
-	"time"
 
 	"github.com/alibabacloud-go/tea/tea"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	clusterApi "github.com/f-rambo/cloud-copilot/infrastructure/api/cluster"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/biz"
-	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
 	"github.com/go-kratos/kratos/v2/log"
 )
 
@@ -20,51 +17,18 @@ type ClusterInterface struct {
 	aliUc     *biz.AliCloudUsecase
 	clusterUc *biz.ClusterUsecase
 	log       *log.Helper
-	c         *conf.Server
 }
 
-func NewClusterInterface(awsUc *biz.AwsCloudUsecase, aliUc *biz.AliCloudUsecase, clusterUc *biz.ClusterUsecase, c *conf.Bootstrap, logger log.Logger) *ClusterInterface {
+func NewClusterInterface(awsUc *biz.AwsCloudUsecase, aliUc *biz.AliCloudUsecase, clusterUc *biz.ClusterUsecase, logger log.Logger) *ClusterInterface {
 	return &ClusterInterface{
 		awsUc:     awsUc,
 		aliUc:     aliUc,
 		clusterUc: clusterUc,
 		log:       log.NewHelper(logger),
-		c:         c.Server,
 	}
-}
-
-func (c *ClusterInterface) permissionChecking(cluster *biz.Cluster) error {
-	if !cluster.Type.IsCloud() {
-		return nil
-	}
-	if cluster.Type == biz.ClusterType_AWS {
-	}
-	if cluster.Type == biz.ClusterType_ALICLOUD {
-	}
-	return nil
-}
-
-func (c *ClusterInterface) Ping(args *clusterApi.PingMessage, stream clusterApi.ClusterInterface_PingServer) error {
-	fmt.Printf("Received request: %s \n", args.Message)
-	for i := 0; i < 1; i++ {
-		if stream.Context().Err() != nil {
-			fmt.Println(stream.Context().Err())
-		}
-		response := &clusterApi.PingMessage{
-			Message: fmt.Sprintf("Message %d: Hello from server", i),
-		}
-		if err := stream.Send(response); err != nil {
-			return err
-		}
-		time.Sleep(time.Second * 5)
-	}
-	return nil
 }
 
 func (c *ClusterInterface) GetZones(ctx context.Context, cluster *biz.Cluster) (*clusterApi.CloudResources, error) {
-	if err := c.permissionChecking(cluster); err != nil {
-		return nil, err
-	}
 	response := &clusterApi.CloudResources{Resources: make([]*biz.CloudResource, 0)}
 	if !cluster.Type.IsCloud() {
 		return response, nil
@@ -94,9 +58,6 @@ func (c *ClusterInterface) GetZones(ctx context.Context, cluster *biz.Cluster) (
 }
 
 func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster) (*clusterApi.CloudResources, error) {
-	if err := c.permissionChecking(cluster); err != nil {
-		return nil, err
-	}
 	response := &clusterApi.CloudResources{Resources: make([]*biz.CloudResource, 0)}
 	if !cluster.Type.IsCloud() {
 		return response, nil
@@ -127,9 +88,6 @@ func (c *ClusterInterface) GetRegions(ctx context.Context, cluster *biz.Cluster)
 
 func (c *ClusterInterface) CreateCloudBasicResource(cluster *biz.Cluster, stream clusterApi.ClusterInterface_CreateCloudBasicResourceServer) error {
 	defer stream.Send(cluster)
-	if err := c.permissionChecking(cluster); err != nil {
-		return err
-	}
 	if cluster.Type == biz.ClusterType_AWS {
 		err := c.awsUc.Connections(stream.Context(), cluster)
 		if err != nil {
@@ -163,9 +121,6 @@ func (c *ClusterInterface) CreateCloudBasicResource(cluster *biz.Cluster, stream
 
 func (c *ClusterInterface) DeleteCloudBasicResource(cluster *biz.Cluster, stream clusterApi.ClusterInterface_DeleteCloudBasicResourceServer) error {
 	defer stream.Send(cluster)
-	if err := c.permissionChecking(cluster); err != nil {
-		return err
-	}
 	if cluster.Type == biz.ClusterType_AWS {
 		err := c.awsUc.Connections(stream.Context(), cluster)
 		if err != nil {
@@ -199,9 +154,6 @@ func (c *ClusterInterface) DeleteCloudBasicResource(cluster *biz.Cluster, stream
 
 func (c *ClusterInterface) ManageNodeResource(cluster *biz.Cluster, stream clusterApi.ClusterInterface_ManageNodeResourceServer) error {
 	defer stream.Send(cluster)
-	if err := c.permissionChecking(cluster); err != nil {
-		return err
-	}
 	if cluster.Type == biz.ClusterType_AWS {
 		err := c.awsUc.Connections(stream.Context(), cluster)
 		if err != nil {
@@ -249,9 +201,6 @@ func (c *ClusterInterface) GetNodesSystemInfo(cluster *biz.Cluster, stream clust
 			return err
 		}
 		return nil
-	}
-	if err := c.permissionChecking(cluster); err != nil {
-		return err
 	}
 	for _, nodeGroup := range cluster.NodeGroups {
 		isFindNode := false

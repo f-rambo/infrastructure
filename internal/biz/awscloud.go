@@ -12,11 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2Types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elasticloadbalancingv2Types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
-	"github.com/aws/aws-sdk-go-v2/service/iam"
-	"github.com/aws/aws-sdk-go-v2/service/servicequotas"
 	"github.com/f-rambo/cloud-copilot/infrastructure/internal/conf"
 	"github.com/f-rambo/cloud-copilot/infrastructure/utils"
 	"github.com/go-kratos/kratos/v2/log"
@@ -37,13 +34,11 @@ const (
 )
 
 type AwsCloudUsecase struct {
-	c                   *conf.Bootstrap
-	ec2Client           *ec2.Client
-	elbv2Client         *elasticloadbalancingv2.Client
-	eksClient           *eks.Client
-	servicequotasClient *servicequotas.Client
-	iamClient           *iam.Client
-	log                 *log.Helper
+	c           *conf.Bootstrap
+	ec2Client   *ec2.Client
+	elbv2Client *elasticloadbalancingv2.Client
+	awsConfig   aws.Config
+	log         *log.Helper
 }
 
 func NewAwsCloudUseCase(c *conf.Bootstrap, logger log.Logger) *AwsCloudUsecase {
@@ -65,11 +60,9 @@ func (a *AwsCloudUsecase) Connections(ctx context.Context, cluster *Cluster) err
 	if err != nil {
 		return err
 	}
-	a.ec2Client = ec2.NewFromConfig(cfg)
-	a.elbv2Client = elasticloadbalancingv2.NewFromConfig(cfg)
-	a.eksClient = eks.NewFromConfig(cfg)
-	a.servicequotasClient = servicequotas.NewFromConfig(cfg)
-	a.iamClient = iam.NewFromConfig(cfg)
+	a.awsConfig = cfg
+	a.ec2Client = ec2.NewFromConfig(a.awsConfig)
+	a.elbv2Client = elasticloadbalancingv2.NewFromConfig(a.awsConfig)
 	return nil
 }
 

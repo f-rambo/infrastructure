@@ -7,10 +7,7 @@ import "api/cluster/message.proto";
 
 option go_package = "api/cluster;";
 
-
 service ClusterInterface {
-      rpc Ping(infrastructure.api.cluster.PingMessage) returns (stream infrastructure.api.cluster.PingMessage);
-
       rpc GetRegions(biz.cluster.Cluster) returns (infrastructure.api.cluster.CloudResources);
 
       rpc GetZones(biz.cluster.Cluster) returns (infrastructure.api.cluster.CloudResources);

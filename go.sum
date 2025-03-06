@@ -9,8 +9,6 @@ github.com/alibabacloud-go/alibabacloud-gateway-pop v0.0.6/go.mod h1:4EUIoxs/do2
 github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.4/go.mod h1:sCavSAvdzOjul4cEqeVtvlSaSScfNsTQ+46HwlTL1hc=
 github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.5 h1:zE8vH9C7JiZLNJJQ5OwjU9mSi4T9ef9u3BURT6LCLC8=
 github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.5/go.mod h1:tWnyE9AjF8J8qqLk645oUmVUnFybApTQWklQmi5tY6g=
-github.com/alibabacloud-go/cs-20151215/v5 v5.8.0 h1:JM2O94MCIi0wbIn1h1bs9769u+ggBY4fsowdCy7b5D4=
-github.com/alibabacloud-go/cs-20151215/v5 v5.8.0/go.mod h1:COcwYmdMKV1vgn7ajJMPohYKEOmXb6GNt+iZVk4IPno=
 github.com/alibabacloud-go/darabonba-array v0.1.0 h1:vR8s7b1fWAQIjEjWnuF0JiKsCvclSRTfDzZHTYqfufY=
 github.com/alibabacloud-go/darabonba-array v0.1.0/go.mod h1:BLKxr0brnggqOJPqT09DFJ8g3fsDshapUD3C3aOEFaI=
 github.com/alibabacloud-go/darabonba-encode-util v0.0.2 h1:1uJGrbsGEVqWcWxrS9MyC2NG0Ax+GpOM5gtupki31XE=
@@ -75,18 +73,12 @@ github.com/aws/aws-sdk-go-v2/internal/ini v1.8.1 h1:VaRN3TlFdd6KxX1x3ILT5ynH6HvK
 github.com/aws/aws-sdk-go-v2/internal/ini v1.8.1/go.mod h1:FbtygfRFze9usAadmnGJNc8KsP346kEe+y2/oyhGAGc=
 github.com/aws/aws-sdk-go-v2/service/ec2 v1.192.0 h1:mNTVdPohLShrsPSyuOCyugLx1DQGCludmuiIsminhUk=
 github.com/aws/aws-sdk-go-v2/service/ec2 v1.192.0/go.mod h1:mzj8EEjIHSN2oZRXiw1Dd+uB4HZTl7hC8nBzX9IZMWw=
-github.com/aws/aws-sdk-go-v2/service/eks v1.52.1 h1:XqyUdJbXQxY48CbBtN9a51HoTQy/kTIwrWiruRDsydk=
-github.com/aws/aws-sdk-go-v2/service/eks v1.52.1/go.mod h1:WTfZ/+I7aSMEna6iYm1Kjne9A8f1MyxXNfp6hCa1+Bk=
 github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.42.0 h1:C4/D90/j3EF/SokpC4HO1aPMkZV1dgqUbmejdpxQiAE=
 github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.42.0/go.mod h1:pZP3I+Ts+XuhJJtZE49+ABVjfxm7u9/hxcNUYSpY3OE=
-github.com/aws/aws-sdk-go-v2/service/iam v1.38.1 h1:hfkzDZHBp9jAT4zcd5mtqckpU4E3Ax0LQaEWWk1VgN8=
-github.com/aws/aws-sdk-go-v2/service/iam v1.38.1/go.mod h1:u36ahDtZcQHGmVm/r+0L1sfKX4fzLEMdCqiKRKkUMVM=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.1 h1:iXtILhvDxB6kPvEXgsDhGaZCSC6LQET5ZHSdJozeI0Y=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.1/go.mod h1:9nu0fVANtYiAePIBh2/pFUSwtJ402hLnp854CNoDOeE=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.5 h1:wtpJ4zcwrSbwhECWQoI/g6WM9zqCcSpHDJIWSbMLOu4=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.5/go.mod h1:qu/W9HXQbbQ4+1+JcZp0ZNPV31ym537ZJN+fiS7Ti8E=
-github.com/aws/aws-sdk-go-v2/service/servicequotas v1.25.6 h1:GiXCmQ0LWJxMqxeRK8Oc1w2Ufyn9ADxc0MXZMzFTYyI=
-github.com/aws/aws-sdk-go-v2/service/servicequotas v1.25.6/go.mod h1:j97IqfLFihFonWq16KSfpMENWQ1PvLjNhjoJfpwYTv8=
 github.com/aws/aws-sdk-go-v2/service/sso v1.24.6 h1:3zu537oLmsPfDMyjnUS2g+F2vITgy5pB74tHI+JBNoM=
 github.com/aws/aws-sdk-go-v2/service/sso v1.24.6/go.mod h1:WJSZH2ZvepM6t6jwu4w/Z45Eoi75lPN7DcydSRtJg6Y=
 github.com/aws/aws-sdk-go-v2/service/ssooidc v1.28.5 h1:K0OQAsDywb0ltlFrZm0JHPY3yZp/S9OaoLU33S7vPS8=
